@@ -12,6 +12,9 @@ import java.net.Socket;
 import java.net.UnknownHostException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.Set;
+import java.util.HashSet;
+import java.util.Collections;
 import java.util.Formatter;
 import java.util.Hashtable;
 import java.util.TreeMap;
@@ -56,8 +59,9 @@ public class SimpleDynamoProvider extends ContentProvider {
     //Maps and Collections
     static Hashtable<String,String> remotePorts = new Hashtable<>();
     static Hashtable<String, Hashtable<String, TreeMap<Integer, String>>> replTable = new Hashtable<>();
+    static Set myKeySet = Collections.synchronizedSet(new HashSet<String>());
 
-	@Override
+    @Override
 	public int delete(Uri uri, String selection, String[] selectionArgs) {
         messengerDb = dbHelper.getWritableDatabase();
         Log.v("Delete at "+myPort, "Key= "+selection);
@@ -93,11 +97,11 @@ public class SimpleDynamoProvider extends ContentProvider {
 	@Override
 	public Uri insert(Uri uri, ContentValues values) {
         try {
-            String hashKey = genHash(values.get(DynamoResources.KEY_COL).toString());
-            String coordinatorPort = lookUpCoordinator(hashKey);
             String key = values.get(DynamoResources.KEY_COL).toString();
             String value = values.getAsString(DynamoResources.VAL_COL);
-
+            Log.d(DynamoResources.TAG,"Insertion Starts for key "+key);
+            String hashKey = genHash(values.get(DynamoResources.KEY_COL).toString());
+            String coordinatorPort = lookUpCoordinator(key, hashKey);
             if(coordinatorPort.equals(myPort))
             {
                 Log.d(DynamoResources.TAG,"Storing at my DB and sending to replicators");
@@ -108,6 +112,7 @@ public class SimpleDynamoProvider extends ContentProvider {
                 msg[1] = msgToSend;
                 new ClientTask().executeOnExecutor(SimpleDynamoProvider.myPool, msg);
                 myInsert(values);
+                myKeySet.add(key);
             }
 
             else {
@@ -132,6 +137,7 @@ public class SimpleDynamoProvider extends ContentProvider {
 	}
 
     private synchronized void myInsert(ContentValues values) {
+        Log.d(DynamoResources.TAG,"Inserting into my DB key "+values.get(DynamoResources.KEY_COL));
         messengerDb = dbHelper.getWritableDatabase();
         Cursor cur = messengerDb.query(DynamoResources.TABLE_NAME, new String[]{DynamoResources.VAL_COL},
                 DynamoResources.KEY_COL + "='" + values.get(DynamoResources.KEY_COL) + "'", null, null, null, null);
@@ -142,44 +148,71 @@ public class SimpleDynamoProvider extends ContentProvider {
         else
         {
             long rowId = messengerDb.insert(DynamoResources.TABLE_NAME, null, values);
-            if (rowId > 0) {
-//                myMessageMap.put(values.get(DynamoResources.KEY_COL).toString(),values.get(DynamoResources.VAL_COL).toString());
-                Log.v(DynamoResources.TAG,"Insert at my Provider "+ values.toString());
-//                return myUri;
-            }
+//            if (rowId > 0) {
+////                myMessageMap.put(values.get(DynamoResources.KEY_COL).toString(),values.get(DynamoResources.VAL_COL).toString());
+//                Log.v(DynamoResources.TAG,"Insert at my Provider "+ values.toString());
+////                return myUri;
+//            }
         }
     }
 
-    private static String lookUpCoordinator(String hashKey)
+    private static String lookUpCoordinator(String key, String hashKey)
     {
-        Node head = ring.head;
-        Node pre = head.previous;
-        Node next = head.next;
+        synchronized (ring) {
+            Node current = ring.head;
+            Node pre = current.previous;
+//            Node next = current.next;
+            String coordinator = "";
+            Log.d(DynamoResources.TAG, "Looking up where to store the "+key);
+//            if (pre.hashPort.compareTo(hashedPort) > 0 && (hashKey.compareTo(pre.hashPort) > 0 || hashKey.compareTo(hashedPort) < 0)) {
+////            Log.d(DynamoResources.TAG,"Looking Up: I will Keep key "+hashKey);
+//                return myPort;
+//            } else if (hashedPort.compareTo(hashKey) >= 0 && hashKey.compareTo(pre.hashPort) > 0) {
+////            Log.d(DynamoResources.TAG,"Looking Up: I will Keep key "+hashKey);
+//                return myPort;
+//            } else {
+//                while (true) {
+//                    if (next.hashPort.compareTo(current.hashPort) > 0 && (hashKey.compareTo(current.hashPort) > 0 && next.hashPort.compareTo(hashKey) >= 0))
+//                        break;
+//                    else if (next.hashPort.compareTo(current.hashPort) < 0 && (hashKey.compareTo(current.hashPort) > 0 && hashKey.compareTo(next.hashPort) < 0))
+//                        break;
+//                    else
+//                    {
+//                        current = next;
+//                        next = next.next;
+//                    }
+//
+//                    if(next == ring.head)
+//                        break;
+//                }
+//                return next.port;
+//            }
 
-        if(pre.hashPort.compareTo(hashedPort) > 0 && (hashKey.compareTo(pre.hashPort) > 0 || hashKey.compareTo(hashedPort) < 0))
-        {
-            Log.d(DynamoResources.TAG,"Looking Up: I will Keep key "+hashKey);
-            return myPort;
-        }
-        else if(hashedPort.compareTo(hashKey) >= 0 && hashKey.compareTo(pre.hashPort) > 0)
-        {
-            Log.d(DynamoResources.TAG,"Looking Up: I will Keep key "+hashKey);
-            return myPort;
-        }
-        else
-        {
+
             while(true)
             {
-                if(next.hashPort.compareTo(hashedPort) > 0 && (hashKey.compareTo(hashedPort) > 0 && next.hashPort.compareTo(hashKey) >= 0))
+                if (pre.hashPort.compareTo(current.hashPort) > 0 && (hashKey.compareTo(pre.hashPort) > 0 || hashKey.compareTo(current.hashPort) < 0))
+                {
+                    coordinator = current.port;
                     break;
-                else if(next.hashPort.compareTo(hashedPort) < 0 && (hashKey.compareTo(hashedPort) > 0 && hashKey.compareTo(next.hashPort) < 0))
+                }
+                else if (current.hashPort.compareTo(hashKey) >= 0 && hashKey.compareTo(pre.hashPort) > 0)
+                {
+                    coordinator = current.port;
                     break;
+                }
                 else
-                    next = next.next;
-            }
-            return next.port;
-        }
+                {
+                    pre = current;
+                    current = current.next;
+                }
 
+                if(current == ring.head)
+                    break;
+            }
+
+            return coordinator;
+        }
     }
 
 	@Override
@@ -191,8 +224,9 @@ public class SimpleDynamoProvider extends ContentProvider {
 	}
 
 	@Override
-	public Cursor query(Uri uri, String[] projection, String selection,
-			String[] selectionArgs, String sortOrder) {
+	public Cursor query(Uri uri, String[] projection, String selection, String[] selectionArgs, String sortOrder) {
+
+        Log.d(DynamoResources.TAG, "Inside Query");
         messengerDb = dbHelper.getReadableDatabase();
         SQLiteQueryBuilder qBuilder = new SQLiteQueryBuilder();
         qBuilder.setTables(DynamoResources.TABLE_NAME);
@@ -278,8 +312,7 @@ public class SimpleDynamoProvider extends ContentProvider {
             Log.v(DynamoResources.TAG, "NoSuchAlgorithmException in Query");
         }
 
-
-		return null;
+		return resultCursor;
 	}
 
     private synchronized MatrixCursor getResults(String selection, String origin) throws InterruptedException, NoSuchAlgorithmException {
@@ -292,8 +325,8 @@ public class SimpleDynamoProvider extends ContentProvider {
         }
         else
         {
+            coordinator = lookUpCoordinator(selection, genHash(selection));
             Log.d(DynamoResources.TAG, "Sending Query to "+ coordinator);
-            coordinator = lookUpCoordinator(genHash(selection));
         }
 
         String[] msg = new String[4];
@@ -306,13 +339,14 @@ public class SimpleDynamoProvider extends ContentProvider {
         String message = queue.take();
         Log.d(DynamoResources.TAG, "Gotcha Message " + message + " at " + myPort);
         String[] received = message.split(DynamoResources.valSeparator);
+        mx = new MatrixCursor(new String[]{DynamoResources.KEY_COL, DynamoResources.VAL_COL}, 50);
         for (String m : received) {
             Log.v(DynamoResources.TAG, "Merging my results");
             String[] keyVal = m.split(" ");
+//            if(!myKeySet.contains(keyVal[0]))
             mx.addRow(new String[]{keyVal[0], keyVal[1]});
         }
         Log.v(DynamoResources.TAG,"GetResults Count "+mx.getCount());
-        mx = new MatrixCursor(new String[]{DynamoResources.KEY_COL, DynamoResources.VAL_COL}, 50);
         return mx;
     }
     
@@ -350,7 +384,7 @@ public class SimpleDynamoProvider extends ContentProvider {
             try {
                 while (true) {
                     Socket socket = serverSocket.accept();
-                    Log.v(DynamoResources.TAG,"Socket Accepted");
+//                    Log.v(DynamoResources.TAG,"Socket Accepted");
                     InputStream read = socket.getInputStream();
                     String msgReceived = "";
                     InputStreamReader reader = new InputStreamReader(read);
@@ -373,13 +407,13 @@ public class SimpleDynamoProvider extends ContentProvider {
                     }
                     else if(msgs[0].equals(DynamoResources.COORDINATION))
                     {
-                        Log.d(DynamoResources.TAG,"Coordination Message by "+msgs[3]);
+                        Log.d(DynamoResources.TAG,"Coordination Message by "+msgs[3]+" for key "+msgs[1]);
                         ContentValues cv = new ContentValues();
 
                         cv.put(DynamoResources.KEY_COL, msgs[1]);
                         cv.put(DynamoResources.VAL_COL, msgs[2]);
                         myInsert(cv);
-
+                        myKeySet.add(msgs[1]);
 //                        String msgToSend = DynamoResources.REPLICATION + DynamoResources.separator + msgs[1] + DynamoResources.separator +
 //                                msgs[2] + DynamoResources.separator + myPort + DynamoResources.separator + msgs[4];
 //                        String[] msg = new String[2];
@@ -389,7 +423,7 @@ public class SimpleDynamoProvider extends ContentProvider {
                     }
                     else if(msgs[0].equals(DynamoResources.REPLICATION))
                     {
-                        Log.d(DynamoResources.TAG,"Replication Message by "+msgs[3]);
+                        Log.d(DynamoResources.TAG,"Replication Message by "+msgs[3] +" for key "+msgs[1]);
                         ContentValues cv = new ContentValues();
                         cv.put(DynamoResources.KEY_COL, msgs[1]);
                         cv.put(DynamoResources.VAL_COL, msgs[2]);
@@ -655,3 +689,4 @@ public class SimpleDynamoProvider extends ContentProvider {
 
 //Coordination and Replication message need not to have hashkey. Look into this. Remove if not needed till the final submission.
 //Query functionality for a single key. Send request to coordinator directly.
+//* queries should return the unique values.

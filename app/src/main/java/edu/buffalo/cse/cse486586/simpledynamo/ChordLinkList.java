@@ -69,6 +69,22 @@ public class ChordLinkList {
         return node.next.port + DynamoResources.valSeparator + node.next.next.port;
     }
 
+    public boolean haveIgot(String port)
+    {
+        Node node = head;
+
+        while (true)
+        {
+            if(node.port.equals(port))
+                break;
+             node = node.next;
+        }
+
+        if(node.next.equals(head.port) || node.next.next.port.equals(head.port))
+            return true;
+        else return false;
+    }
+
     public String printRing()
     {
         Node node = head;
