@@ -100,7 +100,7 @@ public class SimpleDynamoProvider extends ContentProvider {
             String key = values.get(DynamoResources.KEY_COL).toString();
             String value = values.getAsString(DynamoResources.VAL_COL);
             Log.d(DynamoResources.TAG,"Insertion Starts for key "+key);
-            String hashKey = genHash(values.get(DynamoResources.KEY_COL).toString());
+            String hashKey = DynamoResources.genHash(values.get(DynamoResources.KEY_COL).toString());
             String coordinatorPort = lookUpCoordinator(key, hashKey);
             if(coordinatorPort.equals(myPort))
             {
@@ -156,41 +156,6 @@ public class SimpleDynamoProvider extends ContentProvider {
         }
     }
 
-    private static String lookUpCoordinator(String key, String hashKey)
-    {
-        synchronized (ring) {
-            Node current = ring.head;
-            Node pre = current.previous;
-//            Node next = current.next;
-            String coordinator = "";
-            Log.d(DynamoResources.TAG, "Looking up where to store the "+key);
-
-            while(true)
-            {
-                if (pre.hashPort.compareTo(current.hashPort) > 0 && (hashKey.compareTo(pre.hashPort) > 0 || hashKey.compareTo(current.hashPort) < 0))
-                {
-                    coordinator = current.port;
-                    break;
-                }
-                else if (current.hashPort.compareTo(hashKey) >= 0 && hashKey.compareTo(pre.hashPort) > 0)
-                {
-                    coordinator = current.port;
-                    break;
-                }
-                else
-                {
-                    pre = current;
-                    current = current.next;
-                }
-
-                if(current == ring.head)
-                    break;
-            }
-
-            return coordinator;
-        }
-    }
-
 	@Override
 	public boolean onCreate() {
         Log.d(DynamoResources.TAG, "Inside Create");
@@ -221,7 +186,7 @@ public class SimpleDynamoProvider extends ContentProvider {
                     Log.v(DynamoResources.TAG,"Before Merging Count "+mx.getCount());
                     if (resultCursor.getCount() > 0) {
                         resultCursor.moveToFirst();
-                        String cursorStr = getCursorValue(resultCursor);
+                        String cursorStr = DynamoResources.getCursorValue(resultCursor);
                         String[] received = cursorStr.split(DynamoResources.valSeparator);
                         for (String m : received) {
                             String[] keyVal = m.split(" ");
@@ -242,7 +207,7 @@ public class SimpleDynamoProvider extends ContentProvider {
                         mx.moveToLast();
                         if (resultCursor.getCount() > 0) {
                             resultCursor.moveToFirst();
-                            String cursorStr = getCursorValue(resultCursor);
+                            String cursorStr = DynamoResources.getCursorValue(resultCursor);
                             String[] received = cursorStr.split(DynamoResources.valSeparator);
                             for (String m : received) {
                                 String[] keyVal = m.split(" ");
@@ -301,7 +266,7 @@ public class SimpleDynamoProvider extends ContentProvider {
         }
         else
         {
-            coordinator = lookUpCoordinator(selection, genHash(selection));
+            coordinator = lookUpCoordinator(selection, DynamoResources.genHash(selection));
             Log.d(DynamoResources.TAG, "Sending Query to "+ coordinator);
         }
 
@@ -324,24 +289,6 @@ public class SimpleDynamoProvider extends ContentProvider {
         }
         Log.v(DynamoResources.TAG,"GetResults Count "+mx.getCount());
         return mx;
-    }
-    
-    private String getCursorValue(Cursor resultCursor) {
-        Log.v(DynamoResources.TAG,"Converting Cursor to String");
-        resultCursor.moveToFirst();
-        int valueIndex = resultCursor.getColumnIndex(DynamoResources.VAL_COL);
-        int keyIndex = resultCursor.getColumnIndex(DynamoResources.KEY_COL);
-        String result = "";
-        boolean isLast = true;
-        while(resultCursor.getCount() > 0 && isLast)
-        {
-            String newKey = resultCursor.getString(keyIndex);
-            String newValue = resultCursor.getString(valueIndex);
-            result = result+newKey+" "+newValue+DynamoResources.valSeparator;
-            isLast = resultCursor.moveToNext();
-        }
-        Log.v(DynamoResources.TAG,"Final Building: "+result);
-        return result;
     }
     
 	@Override
@@ -411,7 +358,7 @@ public class SimpleDynamoProvider extends ContentProvider {
                         originator = msgs[3];
                         isRequester = false;
                         if(mUri == null)
-                            mUri = buildUri("content", "edu.buffalo.cse.cse486586.simpledht.provider");
+                            mUri = DynamoResources.buildUri("content", "edu.buffalo.cse.cse486586.simpledht.provider");
                         publishProgress(new String[]{msgs[0],msgs[1],msgs[2]});
                     }
                     else if(msgs[0].equals(DynamoResources.QUERYREPLY))
@@ -445,12 +392,12 @@ public class SimpleDynamoProvider extends ContentProvider {
             catch (IOException ex)
             {
                 ex.printStackTrace();
-                Log.e(DynamoResources.TAG,"Failure in ServerTask: "+ex.getMessage());
+                Log.e(DynamoResources.TAG,"IOException in ServerTask: "+ex.getMessage());
             }
             catch (Exception ex)
             {
                 ex.printStackTrace();
-                Log.e(DynamoResources.TAG,"Failure in ServerTask: "+ex.getMessage());
+                Log.e(DynamoResources.TAG,"Exception in ServerTask: "+ex.getMessage());
             }
             return null;
         }
@@ -465,7 +412,7 @@ public class SimpleDynamoProvider extends ContentProvider {
                 Log.d(DynamoResources.TAG,"Query Requested result count"+resultCursor.getCount()+"");
                 String message = "";
                 if(resultCursor.getCount() > 0)
-                    message = getCursorValue(resultCursor);
+                    message = DynamoResources.getCursorValue(resultCursor);
                 isRequester = true;
                 Log.v(DynamoResources.TAG,"Now replying back with "+message);
                 String[] msgToRequester = new String[4];
@@ -491,81 +438,53 @@ public class SimpleDynamoProvider extends ContentProvider {
                 for(String port : remotePorts.keySet())
                 {
                     if(!port.equals(myPort))
-                        sendMessage(port,msgToSend);
+                        DynamoResources.sendMessage(port,msgToSend);
                 }
             }
             else if(params[0].equals(DynamoResources.HEARTBEAT)) {
                 msgToSend = params[0] + DynamoResources.separator + myPort;
                 portToSend = params[1];
-                sendMessage(portToSend,msgToSend);
+                DynamoResources.sendMessage(portToSend,msgToSend);
             }
             else if(params[0].equals(DynamoResources.COORDINATION))
             {
                 portToSend = params[1];
-                sendMessage(portToSend,DynamoResources.COORDINATION + DynamoResources.separator + params[2]);
+                DynamoResources.sendMessage(portToSend,DynamoResources.COORDINATION + DynamoResources.separator + params[2]);
                 String[] replicators = params[3].split(DynamoResources.valSeparator);
                 msgToSend = DynamoResources.REPLICATION + DynamoResources.separator + params[2];
-                sendMessage(replicators[0], msgToSend);
-                sendMessage(replicators[1], msgToSend);
+                DynamoResources.sendMessage(replicators[0], msgToSend);
+                DynamoResources.sendMessage(replicators[1], msgToSend);
             }
             else if(params[0].equals(DynamoResources.REPLICATION))
             {
                 msgToSend = params[1];
-                sendMessage(ring.head.next.port, msgToSend);
-                sendMessage(ring.head.next.next.port, msgToSend);
+                DynamoResources.sendMessage(ring.head.next.port, msgToSend);
+                DynamoResources.sendMessage(ring.head.next.next.port, msgToSend);
             }
             else if(params[0].equals(DynamoResources.QUERY))
             {
                 msgToSend = params[0] + DynamoResources.separator + params[1] + DynamoResources.separator + myPort + DynamoResources.separator + params[3];
                 portToSend = params[2];
-                sendMessage(portToSend,msgToSend);
+                DynamoResources.sendMessage(portToSend,msgToSend);
             }
             else if(params[0].equals(DynamoResources.QUERYREPLY))
             {
                 msgToSend = params[0] + DynamoResources.separator + params[1] + DynamoResources.separator + params[2];
                 portToSend = params[3];
-                sendMessage(portToSend,msgToSend);
+                DynamoResources.sendMessage(portToSend,msgToSend);
             }
             else if(params[0].equals(DynamoResources.DELETE))
             {
                 msgToSend = params[0] + DynamoResources.separator + params[1];
                 portToSend = params[2];
-                sendMessage(portToSend,msgToSend);
+                DynamoResources.sendMessage(portToSend,msgToSend);
             }
             return null;
         }
     }
 
-    private static void sendMessage(String portToSend, String msgToSend)
-    {
-        try {
-            Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}),
-                    Integer.parseInt(portToSend));
-            OutputStream out = socket.getOutputStream();
-            OutputStreamWriter writer = new OutputStreamWriter(out);
-            writer.write(msgToSend);
-            writer.flush();
-            writer.close();
-            out.close();
-            socket.close();
-
-        }
-        catch (UnknownHostException e) {
-            e.printStackTrace();
-            Log.e(DynamoResources.TAG, "ClientTask UnknownHostException");
-        }
-        catch (IOException e) {
-            e.printStackTrace();
-            Log.e(DynamoResources.TAG, "ClientTask IOException for "+portToSend);
-        }
-        catch (Exception e){
-            e.printStackTrace();
-            Log.e(DynamoResources.TAG, "ClientTask Exception");
-        }
-    }
-
     private static void adjustNode(String port) throws NoSuchAlgorithmException{
-        String hash = genHash(remotePorts.get(port));
+        String hash = DynamoResources.genHash(remotePorts.get(port));
         Node node = ring.head;
         while(true) {
 
@@ -611,7 +530,7 @@ public class SimpleDynamoProvider extends ContentProvider {
             remotePorts.put("11116","5558");
             remotePorts.put("11124","5562");
             remotePorts.put("11112","5556");
-            hashedPort = genHash(remotePorts.get(myPort));
+            hashedPort = DynamoResources.genHash(remotePorts.get(myPort));
             ring = new ChordLinkList(myPort,hashedPort);
 
         } catch (NoSuchAlgorithmException e) {
@@ -619,22 +538,41 @@ public class SimpleDynamoProvider extends ContentProvider {
         }
     }
 
-    private static String genHash(String input) throws NoSuchAlgorithmException {
-        MessageDigest sha1 = MessageDigest.getInstance("SHA-1");
-        byte[] sha1Hash = sha1.digest(input.getBytes());
-        Formatter formatter = new Formatter();
-        for (byte b : sha1Hash) {
-            formatter.format("%02x", b);
+    private static String lookUpCoordinator(String key, String hashKey)
+    {
+        synchronized (ring) {
+            Node current = ring.head;
+            Node pre = current.previous;
+//            Node next = current.next;
+            String coordinator = "";
+            Log.d(DynamoResources.TAG, "Looking up where to store the "+key);
+
+            while(true)
+            {
+                if (pre.hashPort.compareTo(current.hashPort) > 0 && (hashKey.compareTo(pre.hashPort) > 0 || hashKey.compareTo(current.hashPort) < 0))
+                {
+                    coordinator = current.port;
+                    break;
+                }
+                else if (current.hashPort.compareTo(hashKey) >= 0 && hashKey.compareTo(pre.hashPort) > 0)
+                {
+                    coordinator = current.port;
+                    break;
+                }
+                else
+                {
+                    pre = current;
+                    current = current.next;
+                }
+
+                if(current == ring.head)
+                    break;
+            }
+
+            return coordinator;
         }
-        return formatter.toString();
     }
 
-    private Uri buildUri(String scheme, String authority) {
-        Uri.Builder uriBuilder = new Uri.Builder();
-        uriBuilder.authority(authority);
-        uriBuilder.scheme(scheme);
-        return uriBuilder.build();
-    }
 }
 
 //Coordination and Replication message need not to have hashkey. Look into this. Remove if not needed till the final submission.
