@@ -7,6 +7,7 @@ class Node{
 
     String port;
     String hashPort;
+    boolean isAlive;
 
     Node next;
     Node previous;
@@ -17,6 +18,7 @@ class Node{
         this.hashPort = hashPort;
         next = null;
         previous = null;
+        isAlive = true;
     }
 }
 public class ChordLinkList {

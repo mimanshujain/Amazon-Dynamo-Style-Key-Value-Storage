@@ -164,30 +164,6 @@ public class SimpleDynamoProvider extends ContentProvider {
 //            Node next = current.next;
             String coordinator = "";
             Log.d(DynamoResources.TAG, "Looking up where to store the "+key);
-//            if (pre.hashPort.compareTo(hashedPort) > 0 && (hashKey.compareTo(pre.hashPort) > 0 || hashKey.compareTo(hashedPort) < 0)) {
-////            Log.d(DynamoResources.TAG,"Looking Up: I will Keep key "+hashKey);
-//                return myPort;
-//            } else if (hashedPort.compareTo(hashKey) >= 0 && hashKey.compareTo(pre.hashPort) > 0) {
-////            Log.d(DynamoResources.TAG,"Looking Up: I will Keep key "+hashKey);
-//                return myPort;
-//            } else {
-//                while (true) {
-//                    if (next.hashPort.compareTo(current.hashPort) > 0 && (hashKey.compareTo(current.hashPort) > 0 && next.hashPort.compareTo(hashKey) >= 0))
-//                        break;
-//                    else if (next.hashPort.compareTo(current.hashPort) < 0 && (hashKey.compareTo(current.hashPort) > 0 && hashKey.compareTo(next.hashPort) < 0))
-//                        break;
-//                    else
-//                    {
-//                        current = next;
-//                        next = next.next;
-//                    }
-//
-//                    if(next == ring.head)
-//                        break;
-//                }
-//                return next.port;
-//            }
-
 
             while(true)
             {
@@ -343,8 +319,8 @@ public class SimpleDynamoProvider extends ContentProvider {
         for (String m : received) {
             Log.v(DynamoResources.TAG, "Merging my results");
             String[] keyVal = m.split(" ");
-//            if(!myKeySet.contains(keyVal[0]))
-            mx.addRow(new String[]{keyVal[0], keyVal[1]});
+            if(!myKeySet.contains(keyVal[0]))
+                mx.addRow(new String[]{keyVal[0], keyVal[1]});
         }
         Log.v(DynamoResources.TAG,"GetResults Count "+mx.getCount());
         return mx;
