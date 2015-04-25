@@ -17,7 +17,9 @@ public class GroupMessageDbHelper extends SQLiteOpenHelper
         if(!"".equals(tableName))
         {
             CREATE_TABLE = "CREATE TABLE " +
-                    tableName +  " ( " + DynamoResources.KEY_COL + " TEXT PRIMARY KEY, " + DynamoResources.VAL_COL + " TEXT )";
+                    tableName +  " ( " + DynamoResources.KEY_COL + " TEXT PRIMARY KEY, " + DynamoResources.VAL_COL + " TEXT " +
+                    ", "+ DynamoResources.VERSION + " INTEGER" +
+                    ");";
         }
         //messengerDb.execSQL(CREATE_TABLE);
 

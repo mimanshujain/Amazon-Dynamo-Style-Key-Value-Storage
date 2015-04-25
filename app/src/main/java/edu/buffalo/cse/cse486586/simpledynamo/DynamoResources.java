@@ -27,11 +27,16 @@ public final class DynamoResources {
     public final static String QUERY = "query";
     public final static String QUERYREPLY = "queryReply";
     public final static String DELETE = "delete";
+    public final static String FAILED = "failed";
+    public final static String COOR = "coordinator";
+    public final static String ALIVE = "alive";
+    public final static String RECOVERY = "recovery";
 
     //Db Table and Column Name
     public static final String TABLE_NAME = "tblchatMessage";
     public static final String KEY_COL = "key";
     public static final String VAL_COL = "value";
+    public static final String VERSION = "version";
 
     //Db Attributes
     public static final String DB_NAME = "messagesDb";

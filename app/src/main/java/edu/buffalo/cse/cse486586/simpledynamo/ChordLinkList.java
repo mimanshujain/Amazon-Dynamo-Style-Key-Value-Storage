@@ -71,6 +71,43 @@ public class ChordLinkList {
         return node.next.port + DynamoResources.valSeparator + node.next.next.port;
     }
 
+    public synchronized boolean getLifeStatus(String port)
+    {
+        Node node = head;
+        while (true)
+        {
+            if(node.port.equals(port))
+                break;
+            node = node.next;
+        }
+        return node.isAlive;
+    }
+
+    public boolean existsInChain(String port)
+    {
+        Node node = head;
+        while (true)
+        {
+            if(node.port.equals(port))
+                return true;
+            node = node.next;
+            if(node == head)
+                break;
+        }
+        return false;
+    }
+
+    public synchronized void setLifeStatus(String port, boolean status)
+    {
+        Node node = head;
+        while (true)
+        {
+            if(node.port.equals(port))
+                break;
+            node = node.next;
+        }
+        node.isAlive = status;
+    }
     public boolean haveIgot(String port)
     {
         Node node = head;
