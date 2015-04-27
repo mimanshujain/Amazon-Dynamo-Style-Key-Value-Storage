@@ -66,6 +66,8 @@ public class SimpleDynamoProvider extends ContentProvider {
     static Set myKeySet = Collections.synchronizedSet(new HashSet<String>());
     static Hashtable<String, Hashtable<String, String>> failedCoorMap = new Hashtable<>();
     static Hashtable<String, Integer> failedVersions = new Hashtable<>();
+    static Hashtable<String, BlockingQueue<String>> blockMap = new Hashtable<>();
+    static Hashtable<String, String> myKeysMap = new Hashtable<>();
 
     @Override
 	public int delete(Uri uri, String selection, String[] selectionArgs) {
@@ -77,10 +79,12 @@ public class SimpleDynamoProvider extends ContentProvider {
 
         if(selection.equals(DynamoResources.SELECTLOCAL)) {
             num = messengerDb.delete(DynamoResources.TABLE_NAME, null, null);
+            myKeysMap = new Hashtable<>();
         }
         else if(selection.equals(DynamoResources.SELECTALL))
         {
             num = messengerDb.delete(DynamoResources.TABLE_NAME, null, null);
+            myKeysMap = new Hashtable<>();
             String[] msg = new String[3];
             msg[0] = DynamoResources.DELETE;
             msg[1] = myPort;
@@ -90,6 +94,7 @@ public class SimpleDynamoProvider extends ContentProvider {
         else
         {
             num = messengerDb.delete(DynamoResources.TABLE_NAME,"key = \'"+selection+"\'",null);
+            myKeysMap.remove(selection);
         }
         return num;
 	}
@@ -105,7 +110,7 @@ public class SimpleDynamoProvider extends ContentProvider {
         try {
             String key = values.get(DynamoResources.KEY_COL).toString();
             String value = values.getAsString(DynamoResources.VAL_COL);
-            Log.d(DynamoResources.TAG,"Insertion Starts for key "+key);
+            Log.d(DynamoResources.TAG,"Insertion Starts for key "+key +" with value "+value);
             String hashKey = DynamoResources.genHash(values.get(DynamoResources.KEY_COL).toString());
             //Versioning
             int currentVersion = 0;
@@ -120,34 +125,42 @@ public class SimpleDynamoProvider extends ContentProvider {
             String coordinatorPort = lookUpCoordinator(key, hashKey);
             if(coordinatorPort.equals(myPort))
             {
-                Log.d(DynamoResources.TAG,"Storing at my DB and sending to replicators");
+                Log.d(DynamoResources.TAG,"Storing at my DB and sending to replicators for key "+key);
                 messengerDb = dbHelper.getWritableDatabase();
-                Cursor cur = messengerDb.query(DynamoResources.TABLE_NAME, new String[]{DynamoResources.VAL_COL},
+                Cursor cur = messengerDb.query(DynamoResources.TABLE_NAME, null,
                         DynamoResources.KEY_COL + "='" + values.get(DynamoResources.KEY_COL) + "'", null, null, null, null);
 
                 if (cur.getCount() > 0) {
-                    int oldVersion = cur.getInt(cur.getColumnIndex(DynamoResources.VERSION));
+                    cur.moveToFirst();
+                    Log.d(DynamoResources.TAG,"Count2 "+cur.getCount()+" Column Count "+cur.getColumnCount()+" Index: "+cur.getColumnName(2));
+                    int oldVersion = cur.getInt(2);
                     currentVersion = oldVersion + 1;
+                    if(values.size() == 3)
+                        values.remove(DynamoResources.VERSION);
                     values.put(DynamoResources.VERSION,currentVersion);
 //                messengerDb.update(DynamoResources.TABLE_NAME, values, "value = '" + values.get(DynamoResources.VAL_COL) + "'", null);
-                    messengerDb.update(DynamoResources.TABLE_NAME, values, null, null);
+                    messengerDb.update(DynamoResources.TABLE_NAME, values, DynamoResources.KEY_COL+" = '" + values.get(DynamoResources.KEY_COL) + "'", null);
                 }
                 else
                 {
                     currentVersion = 1;
+                    if(values.size() == 3)
+                        values.remove(DynamoResources.VERSION);
                     values.put(DynamoResources.VERSION, currentVersion);
 //                    myInsert(values);
                     messengerDb.insert(DynamoResources.TABLE_NAME, null, values);
-                    myKeySet.add(key);
-                }
+//                    myKeySet.add(key);
 
+                }
+                myKeysMap.put(key,value);
+                failedVersions.put(key,currentVersion);
                 //See if record is present
                 //if no - then add version column and call myinsert and also send replication message
                 //if yes - then find the older version number, +1 it and update it here only and also send the updated version to replicators
 
                 String msgToSend = DynamoResources.REPLICATION + DynamoResources.separator + key + DynamoResources.separator +
                         value + DynamoResources.separator + myPort + DynamoResources.separator + hashKey +
-                        DynamoResources.separator + currentVersion;
+                        DynamoResources.separator + currentVersion + DynamoResources.separator + myPort;
                 String[] msg = new String[2];
                 msg[0] = DynamoResources.REPLICATION;
                 msg[1] = msgToSend;
@@ -155,14 +168,15 @@ public class SimpleDynamoProvider extends ContentProvider {
             }
 
             else {
-                Log.d(DynamoResources.TAG,"Sending Key to real Coordinator and replicators "+coordinatorPort);
+                Log.d(DynamoResources.TAG,"Sending Key "+key+" to real Coordinator and replicators "+coordinatorPort);
                 String msgToSend = key + DynamoResources.separator +
                         value + DynamoResources.separator + myPort + DynamoResources.separator + hashKey;
-                String[] msg = new String[4];
+                String[] msg = new String[5];
                 msg[0] = DynamoResources.COORDINATION;
                 msg[1] = coordinatorPort;
                 msg[2] = msgToSend;
                 msg[3] = ring.getPreferenceList(coordinatorPort);
+                msg[4] = key;
 //                lookingSet.add(key);
                 new ClientTask().executeOnExecutor(SimpleDynamoProvider.myPool, msg);
             }
@@ -177,41 +191,50 @@ public class SimpleDynamoProvider extends ContentProvider {
 
     private synchronized int myInsert(ContentValues values, String type) throws NoSuchAlgorithmException{
 
-        messengerDb = dbHelper.getWritableDatabase();
-        Cursor cur = messengerDb.query(DynamoResources.TABLE_NAME, new String[]{DynamoResources.VAL_COL},
-                DynamoResources.KEY_COL + "='" + values.get(DynamoResources.KEY_COL) + "'", null, null, null, null);
-
         if(type.equals(DynamoResources.REPLICATION)) {
             Log.d(DynamoResources.TAG, "Inserting into my DB key " + values.get(DynamoResources.KEY_COL));
-
+            messengerDb = dbHelper.getWritableDatabase();
+            Cursor cur = messengerDb.query(DynamoResources.TABLE_NAME, null,
+                    DynamoResources.KEY_COL + "='" + values.get(DynamoResources.KEY_COL) + "'", null, null, null, null);
             if (cur.getCount() > 0) {
-                Log.d(DynamoResources.TAG, "Already present, Updating with new version");
-                int oldVersion = cur.getInt(cur.getColumnIndex(DynamoResources.VERSION));
+                cur.moveToFirst();
+                int oldVersion = cur.getInt(2);
                 int newVersion = values.getAsInteger(DynamoResources.VERSION);
+                Log.d(DynamoResources.TAG, "Already present key "+values.get(DynamoResources.KEY_COL)+", Updating with new version "+newVersion);
                 if (newVersion > oldVersion) {
                     values.put(DynamoResources.VERSION, newVersion);
 //                messengerDb.update(DynamoResources.TABLE_NAME, values, "value = '" + values.get(DynamoResources.VAL_COL) + "'", null);
-                    messengerDb.update(DynamoResources.TABLE_NAME, values, null, null);
+                    messengerDb.update(DynamoResources.TABLE_NAME, values, DynamoResources.KEY_COL+" = '" + values.get(DynamoResources.KEY_COL) + "'", null);
                     return Math.max(newVersion,oldVersion);
                 }
             } else {
-                Log.d(DynamoResources.TAG, "Inserting new row");
+                Log.d(DynamoResources.TAG, "Inserting new row with key "+values.get(DynamoResources.KEY_COL));
                 long rowId = messengerDb.insert(DynamoResources.TABLE_NAME, null, values);
             }
         }//if(type.equals(DynamoResources.FAILED))
         else {
-            Log.d(DynamoResources.TAG, "Inserting into my DB for failed or coordination key " + values.get(DynamoResources.KEY_COL));
+            messengerDb = dbHelper.getWritableDatabase();
+            Cursor cur = messengerDb.query(DynamoResources.TABLE_NAME, null,
+                    DynamoResources.KEY_COL + "='" + values.get(DynamoResources.KEY_COL) + "'", null, null, null, null);
+            Log.d(DynamoResources.TAG, "Inserting into my DB for "+ type +" key " + values.get(DynamoResources.KEY_COL));
             if (cur.getCount() > 0) {
-                int oldVersion = cur.getInt(cur.getColumnIndex(DynamoResources.VERSION));
+                cur.moveToFirst();
+                Log.d(DynamoResources.TAG,"Count "+cur.getCount()+" Column Count "+cur.getColumnCount()+" Index: "+cur.getColumnName(2));
+                int oldVersion = cur.getInt(2);
+                Log.d(DynamoResources.TAG, "Have old data for key "+ values.get(DynamoResources.KEY_COL)+"with older version "+ oldVersion);
+                if(values.size() == 3)
+                    values.remove(DynamoResources.VERSION);
                 values.put(DynamoResources.VERSION, oldVersion+1);
+                Log.d(DynamoResources.TAG,"Values count "+values.size());
+//                values.clear();
 //                messengerDb.update(DynamoResources.TABLE_NAME, values, "value = '" + values.get(DynamoResources.VAL_COL) + "'", null);
-                messengerDb.update(DynamoResources.TABLE_NAME, values, null, null);
+                messengerDb.update(DynamoResources.TABLE_NAME, values, DynamoResources.KEY_COL+" = '" + values.get(DynamoResources.KEY_COL) + "'", null);
                 return oldVersion + 1;
 
             }
             else {
                 values.put(DynamoResources.VERSION, 1);
-                Log.d(DynamoResources.TAG, "Inserting new row");
+                Log.d(DynamoResources.TAG, "Inserting new row with key "+values.get(DynamoResources.KEY_COL));
                 long rowId = messengerDb.insert(DynamoResources.TABLE_NAME, null, values);
                 return 1;
             }
@@ -353,7 +376,7 @@ public class SimpleDynamoProvider extends ContentProvider {
         for (String m : received) {
             Log.v(DynamoResources.TAG, "Merging my results");
             String[] keyVal = m.split(" ");
-            if(!myKeySet.contains(keyVal[0]))
+            if(!myKeysMap.contains(keyVal[0]))
                 mx.addRow(new String[]{keyVal[0], keyVal[1]});
         }
         Log.v(DynamoResources.TAG,"GetResults Count "+mx.getCount());
@@ -387,17 +410,26 @@ public class SimpleDynamoProvider extends ContentProvider {
 
                     if(msgs[0].equals(DynamoResources.JOINING))
                     {
+                        String myNext = ring.head.next.port;
+                        String myNextNext = ring.head.next.next.port;
                         Log.d(DynamoResources.TAG,"Joining starts for "+msgs[1]);
                         if(!ring.existsInChain(msgs[1]))
                             adjustNode(msgs[1]);
                         else {
+                            Log.d(DynamoResources.TAG,"Coming back from the dead "+msgs[1]);
                             ring.setLifeStatus(msgs[1], true);
                             String myCoord = ring.getPreferenceList(msgs[1]);
                             if(myCoord.split(DynamoResources.valSeparator)[0].equals(myPort))
                             {
-                                String message = recovery(msgs[1]);
-                                Log.d(DynamoResources.TAG, "Sending Recovery Message to "+msgs[1]);
+                                String message = recovery(msgs[1],DynamoResources.REPLICATION);
+                                Log.d(DynamoResources.TAG, "Sending Recovery Message to "+msgs[1] + " message "+message);
                                 new ClientTask().executeOnExecutor(SimpleDynamoProvider.myPool, new String[]{DynamoResources.RECOVERY, message, msgs[1]});
+                            }
+                            else if(myNext.equals(msgs[1]) || myNextNext.equals(msgs[1]))
+                            {
+                                String message = recovery(myPort,"");
+                                Log.d(DynamoResources.TAG, "Sending My Keys to "+msgs[1] + " message "+message);
+                                new ClientTask().executeOnExecutor(SimpleDynamoProvider.myPool, new String[]{DynamoResources.RECOVERY, message, msgs[1], myPort});
                             }
                         }
                         new ClientTask().executeOnExecutor(SimpleDynamoProvider.myPool, new String[]{DynamoResources.HEARTBEAT, msgs[1]});
@@ -415,9 +447,10 @@ public class SimpleDynamoProvider extends ContentProvider {
 
                         cv.put(DynamoResources.KEY_COL, msgs[1]);
                         cv.put(DynamoResources.VAL_COL, msgs[2]);
-                        int version = myInsert(cv,"");
-
-                        String msgToSend = DynamoResources.ALIVE + DynamoResources.separator + version;
+                        int version = myInsert(cv,DynamoResources.COOR);
+                        Log.d(DynamoResources.TAG,"Coordination version for key " + msgs[1]+" received: "+version);
+                        String msgToSend = DynamoResources.ALIVE + DynamoResources.separator + version+DynamoResources.separator+myPort+
+                                DynamoResources.separator +msgs[1];
 //                                + DynamoResources.separator +
 //                                msgs[2] + DynamoResources.separator + myPort + DynamoResources.separator + msgs[4];
                         String[] msg = new String[3];
@@ -426,43 +459,51 @@ public class SimpleDynamoProvider extends ContentProvider {
                         msg[2] = msgs[3];
                         new ClientTask().executeOnExecutor(SimpleDynamoProvider.myPool, msg);
 
-                        myKeySet.add(msgs[1]);
+//                        myKeySet.add(msgs[1]);
+                        myKeysMap.put(msgs[1],msgs[2]);
+                        failedVersions.put(msgs[1],version);
                     }
                     else if(msgs[0].equals(DynamoResources.REPLICATION))
                     {
+                        int version = 0;
+                        Log.d(DynamoResources.TAG, "Replication Message by " + msgs[3] + " for key " + msgs[1] + " with version " + msgs[5]);
                         if(!msgs[5].equals(DynamoResources.FAILED)) {
-                            Log.d(DynamoResources.TAG, "Replication Message by " + msgs[3] + " for key " + msgs[1] + " with version " + msgs[5]);
+
+                            version = Integer.parseInt(msgs[5]);
                             ContentValues cv = new ContentValues();
                             cv.put(DynamoResources.KEY_COL, msgs[1]);
                             cv.put(DynamoResources.VAL_COL, msgs[2]);
-                            cv.put(DynamoResources.VERSION, Integer.parseInt(msgs[5]));
+                            cv.put(DynamoResources.VERSION, version);
                             myInsert(cv,DynamoResources.REPLICATION);
+                            Log.d(DynamoResources.TAG,"Inserted version for key " + msgs[1]+" received: "+version);
                         }
                         else {
-                            Log.d(DynamoResources.TAG, "Replication Message by " + msgs[3] + " for key " + msgs[1] + " with version " + msgs[5]);
+//                            Log.d(DynamoResources.TAG, "Replication Message by " + msgs[3] + " for key " + msgs[1] + " with version " + msgs[5]);
                             ContentValues cv = new ContentValues();
                             cv.put(DynamoResources.KEY_COL, msgs[1]);
                             cv.put(DynamoResources.VAL_COL, msgs[2]);
-                            cv.put(DynamoResources.COOR, msgs[6]);
+//                            cv.put(DynamoResources.COOR, msgs[6]);
 
-                            int version = myInsert(cv,DynamoResources.FAILED);
-                            if(msgs.length == 7)
+                            version = myInsert(cv,DynamoResources.FAILED);
+                            Log.d(DynamoResources.TAG,"version for key " + msgs[1]+" received: "+version);
+                        }
+                        if(msgs.length == 7)
+                        {
+                            Log.d(DynamoResources.TAG,"Inserting into map for key " + msgs[1]);
+                            Hashtable<String, String> dummy = null;
+                            if(failedCoorMap.contains(msgs[6]))
                             {
-                                if(failedCoorMap.contains(msgs[6]))
-                                {
-                                    Hashtable<String, String> dummy = failedCoorMap.get(msgs[6]);
-                                    dummy.put(msgs[1], msgs[2]);
-                                    failedCoorMap.put(msgs[6], dummy);
-                                    failedVersions.put(msgs[1], version);
-                                }
-                                else
-                                {
-                                    Hashtable<String, String> dummy = new Hashtable<>();
-                                    dummy.put(msgs[1], msgs[2]);
-                                    failedCoorMap.put(msgs[6], dummy);
-                                    failedVersions.put(msgs[1], version);
-                                }
+                                dummy = failedCoorMap.get(msgs[6]);
+                                dummy.put(msgs[1], msgs[2]);
                             }
+                            else
+                            {
+                                dummy = new Hashtable<>();
+                                dummy.put(msgs[1], msgs[2]);
+                            }
+                            Log.d(DynamoResources.TAG,"Current Values for port " + msgs[6]+" are: "+dummy.values().toString());
+                            failedCoorMap.put(msgs[6], dummy);
+                            failedVersions.put(msgs[1], version);
                         }
                     }
                     else if(msgs [0].equals(DynamoResources.QUERY))
@@ -502,13 +543,26 @@ public class SimpleDynamoProvider extends ContentProvider {
                     }
                     else if(msgs[0].equals(DynamoResources.ALIVE))
                     {
-                        Log.d(DynamoResources.TAG, "Alive message");
-                        insertBlock.add(msgs[1]);
+                        Log.d(DynamoResources.TAG, "Alive message by "+msgs[2]+" for "+msgs[3]);
+                        publishProgress(new String[]{msgs[0], msgs[1]} );
+//                        insertBlock.clear();
+//                        insertBlock.add(msgs[1]);
+//                        if(blockMap.contains(msgs[3]))
+//                        {
+//                            Log.d(DynamoResources.TAG,"inside inside inside");
+//                            BlockingQueue<String> bb = blockMap.get(msgs[3]);
+//                            bb.add(msgs[1]);
+//                            bb.clear();
+////                            blockMap.put(msgs[3],bb);
+//                            blockMap.remove(msgs[3]);
+//                        }
+
                     }
                     else if(msgs[0].equals(DynamoResources.RECOVERY))
                     {
-                        Log.d(DynamoResources.TAG, "REcovery message");
-                        publishProgress(new String[]{msgs[0], msgs[1]});
+                        Log.d(DynamoResources.TAG, "Recovery message by "+msgs[1]);
+                        if(msgs.length > 2  )
+                            publishProgress(new String[]{msgs[0], msgs[2]});
                     }
                 }
             }
@@ -563,6 +617,17 @@ public class SimpleDynamoProvider extends ContentProvider {
                     }
                 }
             }
+            else if(values[0].equals(DynamoResources.ALIVE))
+            {
+                Log.d(DynamoResources.TAG,"Current queue size: "+insertBlock.size());
+                insertBlock.clear();
+                try {
+                    insertBlock.put(values[1]);
+                } catch (InterruptedException e) {
+                    Log.e(DynamoResources.TAG, "Interrupted in Publish progress");
+                    e.printStackTrace();
+                }
+            }
         }
 
     }
@@ -574,86 +639,102 @@ public class SimpleDynamoProvider extends ContentProvider {
 
             String msgToSend = "";
             String portToSend = "";
-            if(params[0].equals(DynamoResources.JOINING)) {
+            if (params[0].equals(DynamoResources.JOINING)) {
                 msgToSend = params[0] + DynamoResources.separator + params[1];
-                for(String port : remotePorts.keySet())
-                {
-                    if(!port.equals(myPort))
-                        DynamoResources.sendMessage(port,msgToSend);
+                for (String port : remotePorts.keySet()) {
+                    if (!port.equals(myPort))
+                        sendMessage(port, msgToSend);
                 }
-            }
-            else if(params[0].equals(DynamoResources.HEARTBEAT)) {
+            } else if (params[0].equals(DynamoResources.HEARTBEAT)) {
                 msgToSend = params[0] + DynamoResources.separator + myPort;
                 portToSend = params[1];
-                DynamoResources.sendMessage(portToSend,msgToSend);
-            }
-            else if(params[0].equals(DynamoResources.COORDINATION))
-            {
+                sendMessage(portToSend, msgToSend);
+            } else if (params[0].equals(DynamoResources.COORDINATION)) {
                 portToSend = params[1];
-                DynamoResources.sendMessage(portToSend,DynamoResources.COORDINATION + DynamoResources.separator + params[2]);
+                sendMessage(portToSend, DynamoResources.COORDINATION + DynamoResources.separator + params[2]);
+//                BlockingQueue<String> bb = new SynchronousQueue<>();
+//                blockMap.put(params[4], bb);
                 String[] replicators = params[3].split(DynamoResources.valSeparator);
-                if(ring.getLifeStatus(portToSend)) {
+                if (ring.getLifeStatus(portToSend)) {
                     try {
+                        Log.d(DynamoResources.TAG, "Waiting for version...by " + portToSend + " for " + params[4]);
                         String version = insertBlock.poll(2000, TimeUnit.MILLISECONDS);
-                        Log.d(DynamoResources.TAG, "Coordinator replied with version " + version);
-                        msgToSend = DynamoResources.REPLICATION + DynamoResources.separator + params[2] +
-                                DynamoResources.separator + version;
+//                        version = blockMap.get(params[4]).poll(3000, TimeUnit.MILLISECONDS);
+                        if (version != null) {
+                            Log.d(DynamoResources.TAG, "Coordinator replied with version " + version + " by  " + portToSend + " for " + params[4]);
+                            msgToSend = DynamoResources.REPLICATION + DynamoResources.separator + params[2] +
+                                    DynamoResources.separator + version + DynamoResources.separator + portToSend;
+                        } else {
+                            Log.d(DynamoResources.TAG, "Time out for key "+params[4]);
+                            ring.setLifeStatus(portToSend, false);
+                            msgToSend = DynamoResources.REPLICATION + DynamoResources.separator + params[2] +
+                                    DynamoResources.separator + DynamoResources.FAILED
+                                    + DynamoResources.separator + portToSend;
+                        }
 
                     } catch (InterruptedException e) {
-                        Log.d(DynamoResources.TAG, "Time out");
-                        ring.setLifeStatus(portToSend, false);
-                        msgToSend = DynamoResources.REPLICATION + DynamoResources.separator + params[2] +
-                                DynamoResources.separator + DynamoResources.FAILED
-                                + DynamoResources.separator + portToSend;
                         e.printStackTrace();
                     }
-                }
-                else {
+                } else {
+                    Log.d(DynamoResources.TAG, "Replication when coordinator is dead "+portToSend);
                     msgToSend = DynamoResources.REPLICATION + DynamoResources.separator + params[2] +
-                            DynamoResources.separator + DynamoResources.FAILED +DynamoResources.separator + portToSend;;
+                            DynamoResources.separator + DynamoResources.FAILED + DynamoResources.separator + portToSend;
                 }
 
 //                msgToSend = DynamoResources.REPLICATION + DynamoResources.separator + params[2];
-                DynamoResources.sendMessage(replicators[0], msgToSend);
-                DynamoResources.sendMessage(replicators[1], msgToSend);
-            }
-            else if(params[0].equals(DynamoResources.REPLICATION))
-            {
+                sendMessage(replicators[0], msgToSend);
+                sendMessage(replicators[1], msgToSend);
+            } else if (params[0].equals(DynamoResources.REPLICATION)) {
                 msgToSend = params[1];
-                DynamoResources.sendMessage(ring.head.next.port, msgToSend);
-                DynamoResources.sendMessage(ring.head.next.next.port, msgToSend+DynamoResources.separator+"2");
-            }
-            else if(params[0].equals(DynamoResources.QUERY))
-            {
+                sendMessage(ring.head.next.port, msgToSend);
+                sendMessage(ring.head.next.next.port, msgToSend);// + DynamoResources.separator + "2"
+            } else if (params[0].equals(DynamoResources.QUERY)) {
                 msgToSend = params[0] + DynamoResources.separator + params[1] + DynamoResources.separator + myPort + DynamoResources.separator + params[3];
                 portToSend = params[2];
-                DynamoResources.sendMessage(portToSend,msgToSend);
-            }
-            else if(params[0].equals(DynamoResources.QUERYREPLY))
-            {
+                sendMessage(portToSend, msgToSend);
+            } else if (params[0].equals(DynamoResources.QUERYREPLY)) {
                 msgToSend = params[0] + DynamoResources.separator + params[1] + DynamoResources.separator + params[2];
                 portToSend = params[3];
-                DynamoResources.sendMessage(portToSend,msgToSend);
-            }
-            else if(params[0].equals(DynamoResources.DELETE))
-            {
+                sendMessage(portToSend, msgToSend);
+            } else if (params[0].equals(DynamoResources.DELETE)) {
                 msgToSend = params[0] + DynamoResources.separator + params[1];
                 portToSend = params[2];
-                DynamoResources.sendMessage(portToSend,msgToSend);
-            }
-            else if(params[0].equals(DynamoResources.ALIVE))
-            {
+                sendMessage(portToSend, msgToSend);
+            } else if (params[0].equals(DynamoResources.ALIVE)) {
                 msgToSend = params[1];
                 portToSend = params[2];
-                DynamoResources.sendMessage(portToSend,msgToSend);
-            }
-            else if(params[0].equals(DynamoResources.RECOVERY))
-            {
-                msgToSend = DynamoResources.RECOVERY + DynamoResources.separator + params[1];
+                sendMessage(portToSend, msgToSend);
+            } else if (params[0].equals(DynamoResources.RECOVERY)) {
+                Log.d(DynamoResources.TAG,"Sending recovery message to "+params[2]);
+                msgToSend = DynamoResources.RECOVERY + DynamoResources.separator + params[3] + DynamoResources.separator + params[2];
                 portToSend = params[2];
-                DynamoResources.sendMessage(portToSend,msgToSend);
+                sendMessage(portToSend, msgToSend);
             }
             return null;
+        }
+
+        private synchronized static void sendMessage(String portToSend, String msgToSend) {
+            try {
+                Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}),
+                        Integer.parseInt(portToSend));
+                OutputStream out = socket.getOutputStream();
+                OutputStreamWriter writer = new OutputStreamWriter(out);
+                writer.write(msgToSend);
+                writer.flush();
+                writer.close();
+                out.close();
+                socket.close();
+
+            } catch (UnknownHostException e) {
+                e.printStackTrace();
+                Log.e(DynamoResources.TAG, "ClientTask UnknownHostException");
+            } catch (IOException e) {
+                e.printStackTrace();
+                Log.e(DynamoResources.TAG, "ClientTask IOException for " + portToSend);
+            } catch (Exception e) {
+                e.printStackTrace();
+                Log.e(DynamoResources.TAG, "ClientTask Exception");
+            }
         }
     }
 
@@ -747,17 +828,30 @@ public class SimpleDynamoProvider extends ContentProvider {
         }
     }
 
-    private String recovery(String port)
+    private String recovery(String port, String type)
     {
+        Log.d(DynamoResources.TAG,"Generating Recovery message "+failedCoorMap.keySet().toString() +" port "+port);
         String result = "";
-        if(failedCoorMap.contains(port))
-        {
-            Hashtable<String, String> dummy = failedCoorMap.get(port);
-            for(Map.Entry<String, String> entry : dummy.entrySet())
-            {
-                result = result + entry.getKey() + " " + entry.getValue() + failedVersions.get(entry.getKey()) + DynamoResources.valSeparator;
+        if(type.equals(DynamoResources.REPLICATION)) {
+            if (failedCoorMap.contains(port)) {
+                Log.d(DynamoResources.TAG, "It has some keys for " + port);
+                Hashtable<String, String> dummy = failedCoorMap.get(port);
+                for (Map.Entry<String, String> entry : dummy.entrySet()) {
+                    String key = entry.getKey();
+                    String value = entry.getValue();
+                    Log.d(DynamoResources.TAG, "Adding key " + key + "and value " + value);
+                    result = result + key + " " + value + " " + failedVersions.get(key) + DynamoResources.valSeparator;
+                }
+//            failedCoorMap.put(port, new Hashtable<String, String>());
             }
-            failedCoorMap.put(port, new Hashtable<String, String>());
+        }
+        else {
+            for (Map.Entry<String, String> entry : myKeysMap.entrySet()) {
+                String key = entry.getKey();
+                String value = entry.getValue();
+                Log.d(DynamoResources.TAG, "Adding key " + key + "and value " + value);
+                result = result + key + " " + value + " " + failedVersions.get(key) + DynamoResources.valSeparator;
+            }
         }
         return result;
     }

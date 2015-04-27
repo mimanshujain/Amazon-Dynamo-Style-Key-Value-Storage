@@ -56,33 +56,33 @@ public final class DynamoResources {
     public static final String NEXT = "next";
     public static final String PREVIOUS = "previous";
 
-    public static void sendMessage(String portToSend, String msgToSend)
-    {
-        try {
-            Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}),
-                    Integer.parseInt(portToSend));
-            OutputStream out = socket.getOutputStream();
-            OutputStreamWriter writer = new OutputStreamWriter(out);
-            writer.write(msgToSend);
-            writer.flush();
-            writer.close();
-            out.close();
-            socket.close();
-
-        }
-        catch (UnknownHostException e) {
-            e.printStackTrace();
-            Log.e(DynamoResources.TAG, "ClientTask UnknownHostException");
-        }
-        catch (IOException e) {
-            e.printStackTrace();
-            Log.e(DynamoResources.TAG, "ClientTask IOException for "+portToSend);
-        }
-        catch (Exception e){
-            e.printStackTrace();
-            Log.e(DynamoResources.TAG, "ClientTask Exception");
-        }
-    }
+//    public synchronized static void sendMessage(String portToSend, String msgToSend)
+//    {
+//        try {
+//            Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}),
+//                    Integer.parseInt(portToSend));
+//            OutputStream out = socket.getOutputStream();
+//            OutputStreamWriter writer = new OutputStreamWriter(out);
+//            writer.write(msgToSend);
+//            writer.flush();
+//            writer.close();
+//            out.close();
+//            socket.close();
+//
+//        }
+//        catch (UnknownHostException e) {
+//            e.printStackTrace();
+//            Log.e(DynamoResources.TAG, "ClientTask UnknownHostException");
+//        }
+//        catch (IOException e) {
+//            e.printStackTrace();
+//            Log.e(DynamoResources.TAG, "ClientTask IOException for "+portToSend);
+//        }
+//        catch (Exception e){
+//            e.printStackTrace();
+//            Log.e(DynamoResources.TAG, "ClientTask Exception");
+////        }
+//    }
 
     public static String getCursorValue(Cursor resultCursor) {
         Log.v(DynamoResources.TAG,"Converting Cursor to String");
