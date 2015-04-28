@@ -19,6 +19,8 @@ import java.util.HashSet;
 import java.util.Collections;
 import java.util.Formatter;
 import java.util.Hashtable;
+import java.util.Timer;
+import java.util.TimerTask;
 import java.util.TreeMap;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.Executor;
@@ -63,14 +65,15 @@ public class SimpleDynamoProvider extends ContentProvider {
 
     //Maps and Collections
     static Hashtable<String,String> remotePorts = new Hashtable<>();
-//    static Hashtable<String, Hashtable<String, TreeMap<Integer, String>>> replTable = new Hashtable<>();
     static Set myKeySet = Collections.synchronizedSet(new HashSet<String>());
     static Hashtable<String, Hashtable<String, String>> failedCoorMap = new Hashtable<>();
     static Hashtable<String, Integer> failedVersions = new Hashtable<>();
-    static Hashtable<String, BlockingQueue<String>> blockMap = new Hashtable<>();
     static Hashtable<String, String> myKeysMap = new Hashtable<>();
-    static Hashtable<String, ArrayList<String>> coorKeyMap = new Hashtable<>();
     static Hashtable<String, String> keyValMap = new Hashtable<>();
+    static Hashtable<String, Integer> queryCount = new Hashtable<>();
+    static Hashtable<String, String> queryKeyVal = new Hashtable<>();
+    static Hashtable<String, Integer> queryKeyVersion = new Hashtable<>();
+    static Hashtable<String, Timer> timerMap = new Hashtable<>();
 
     @Override
 	public int delete(Uri uri, String selection, String[] selectionArgs) {
@@ -320,19 +323,36 @@ public class SimpleDynamoProvider extends ContentProvider {
                         selectionArgs, null, null, sortOrder);
                 Log.v(DynamoResources.TAG,"Count "+count++ +" Count "+ resultCursor.getCount());
             }
+            else if(selection.contains(DynamoResources.SINGLE))
+            {
+                Log.d(DynamoResources.TAG,"Single query no passing "+selection);
+                selection = selection.split(DynamoResources.separator)[0];
+                resultCursor = qBuilder.query(messengerDb, null, " key = \'" + selection + "\' ",
+                        selectionArgs, null, null, sortOrder);
+            }
             else
             {
                 Log.v(DynamoResources.TAG,"Count "+count++ +" Query a single key "+selection);
-                resultCursor = qBuilder.query(messengerDb, projection, " key = \'" + selection + "\' ",
+                resultCursor = qBuilder.query(messengerDb, null, " key = \'" + selection + "\' ",
                         selectionArgs, null, null, sortOrder);
                 if(resultCursor != null && resultCursor.getCount() <= 0)
                 {
+                    Log.d(DynamoResources.TAG,"Query when I am not having key "+selection);
                     try {
                         return getResults(selection,myPort);
                     }
                     catch(InterruptedException e) {
                         e.printStackTrace();
                     }
+                }
+                else
+                {
+                    Log.d(DynamoResources.TAG,"Column count returned " + resultCursor.getColumnCount()+" "+resultCursor.getColumnNames());
+                    resultCursor.moveToFirst();
+                    queryCount.put(selection,1);
+                    queryKeyVersion.put(selection, Integer.parseInt(resultCursor.getString(2)));
+                    queryKeyVal.put(selection,resultCursor.getString(1));
+                    return getResults(selection,myPort);
                 }
             }
         }
@@ -358,19 +378,70 @@ public class SimpleDynamoProvider extends ContentProvider {
                 coordinator = ring.head.next.port;
             else
                 coordinator = ring.head.next.next.port;
+
+            String[] msg = new String[4];
+            msg[0] = DynamoResources.QUERY;
+            msg[1] = selection;
+            msg[2] = coordinator;
+            msg[3] = origin;
+            new ClientTask().executeOnExecutor(SimpleDynamoProvider.myPool, msg);
         }
         else
         {
             coordinator = lookUpCoordinator(selection, DynamoResources.genHash(selection));
-            Log.d(DynamoResources.TAG,"Count "+count++ +" Sending Query to "+ coordinator);
+            if(queryKeyVersion.containsKey(selection))
+            {
+                String replicators = ring.getPreferenceList(coordinator);
+                if(coordinator.equals(myPort))
+                {
+                    Log.d(DynamoResources.TAG,"Query when I am having key "+selection + " and I am coor");
+                    String[] msg = new String[4];
+                    msg[0] = DynamoResources.REPLQUERY;
+                    msg[1] = selection;
+                    msg[2] = replicators;
+                    msg[3] = origin;
+                    new ClientTask().executeOnExecutor(SimpleDynamoProvider.myPool, msg);
+                    Timer time = new Timer();
+                    time.schedule(new QueryTask(selection), 2000);
+                    timerMap.put(selection, time);
+                }
+                else
+                {
+                    Log.d(DynamoResources.TAG,"Query when I am having key "+selection + " and I am not coor");
+                    String[] rep = replicators.split(DynamoResources.valSeparator);
+                    String[] msg = new String[4];
+                    msg[0] = DynamoResources.REPLQUERY;
+                    msg[1] = selection;
+                    msg[3] = origin;
+
+                    if(rep[0].equals(myPort))
+                        msg[2] = coordinator+DynamoResources.valSeparator+rep[1];
+                    else
+                        msg[2] = coordinator+DynamoResources.valSeparator+rep[0];
+
+                    new ClientTask().executeOnExecutor(SimpleDynamoProvider.myPool, msg);
+                    Timer time = new Timer();
+                    time.schedule(new QueryTask(selection), 2000);
+                    timerMap.put(selection, time);
+                }
+            }
+            else {
+
+                Log.d(DynamoResources.TAG, "Count " + count++ + " Sending Query to " + coordinator);
+                String replicators = ring.getPreferenceList(coordinator);
+                String[] msg = new String[4];
+                msg[0] = DynamoResources.REPLQUERY;
+                msg[1] = selection;
+                msg[2] = coordinator + DynamoResources.valSeparator + replicators;
+                msg[3] = origin;
+                new ClientTask().executeOnExecutor(SimpleDynamoProvider.myPool, msg);
+                Timer time = new Timer();
+                time.schedule(new QueryTask(selection), 3000);
+                timerMap.put(selection, time);
+                queryCount.put(selection, 0);
+            }
         }
 
-        String[] msg = new String[4];
-        msg[0] = DynamoResources.QUERY;
-        msg[1] = selection;
-        msg[2] = coordinator;
-        msg[3] = origin;
-        new ClientTask().executeOnExecutor(SimpleDynamoProvider.myPool, msg);
         Log.d(DynamoResources.TAG,"Count "+count++ +" Waiting...");
         String message = queue.take();
         Log.d(DynamoResources.TAG,"Count "+count++ +" Gotcha Message " + message + " at " + myPort);
@@ -379,7 +450,7 @@ public class SimpleDynamoProvider extends ContentProvider {
         for (String m : received) {
             Log.v(DynamoResources.TAG,"Count "+count++ +" Merging my results");
             String[] keyVal = m.split(" ");
-            if(!myKeysMap.contains(keyVal[0]))
+            if(!myKeysMap.containsKey(keyVal[0]))
                 mx.addRow(new String[]{keyVal[0], keyVal[1]});
         }
         Log.v(DynamoResources.TAG,"Count "+count++ +" GetResults Count "+mx.getCount());
@@ -546,9 +617,41 @@ public class SimpleDynamoProvider extends ContentProvider {
                     }
                     else if(msgs[0].equals(DynamoResources.QUERYREPLY))
                     {
-                        if(msgs.length > 2) {
+                        if(msgs.length == 3) {
                             Log.d(DynamoResources.TAG,"Count "+count++ +" Got a reply Mate " + msgs[2]);
                             queue.put(msgs[2]);
+                        }
+                        else if(msgs.length == 4)
+                        {
+                            int qCount = queryCount.get(msgs[1]);
+                            qCount++;
+                            String[] received = msgs[2].split(DynamoResources.valSeparator)[0].split(" ");
+
+                            if(queryKeyVersion.containsKey(msgs[1]))
+                            {
+                                Log.d(DynamoResources.TAG,"Inserting to map when already has key "+received[0]);
+                                int version = queryKeyVersion.get(msgs[1]);
+                                if(version < Integer.parseInt(received[2])) {
+                                    queryKeyVal.put(msgs[1],received[1]);
+                                    queryKeyVersion.put(msgs[1], Integer.parseInt(received[2]));
+                                }
+                            }
+                            else {
+                                Log.d(DynamoResources.TAG,"Inserting to map when not has key "+received[0]);
+                                queryKeyVal.put(msgs[1],received[1]);
+                                queryKeyVersion.put(msgs[1],Integer.parseInt(received[2]));
+                            }
+
+                            if(qCount == 3)
+                            {
+                                Log.d(DynamoResources.TAG,"Total count 3 for key "+received[0]);
+                                Timer time = timerMap.get(msgs[1]);
+                                time.cancel();
+                                String message = msgs[1]+" "+queryKeyVal.get(msgs[1])+" "+queryKeyVersion.get(msgs[1])+DynamoResources.valSeparator;
+                                Log.d(DynamoResources.TAG,"Generating Message "+message);
+                                queue.put(message);
+                            }
+                            else queryCount.put(msgs[1],qCount);
                         }
                         else
                         {
@@ -593,6 +696,11 @@ public class SimpleDynamoProvider extends ContentProvider {
                         if(msgs.length > 2  )
                             publishProgress(new String[]{msgs[0], msgs[2], msgs[1]});
                     }
+
+//                    else if(msgs[0].equals(DynamoResources.REPLQUERY))
+//                    {
+//
+//                    }
                 }
             }
             catch (IOException ex)
@@ -613,20 +721,41 @@ public class SimpleDynamoProvider extends ContentProvider {
             super.onProgressUpdate(values);
 
             if (values[0].equals(DynamoResources.QUERY)) {
-                Cursor resultCursor = query(mUri, null,
-                        values[1], null, null);
-                Log.d(DynamoResources.TAG,"Count "+count++ +" Query Requested result count"+resultCursor.getCount()+"");
-                String message = "";
-                if(resultCursor.getCount() > 0)
-                    message = DynamoResources.getCursorValue(resultCursor);
-                isRequester = true;
-                Log.v(DynamoResources.TAG,"Count "+count++ +" Now replying back with "+message);
-                String[] msgToRequester = new String[4];
-                msgToRequester[0] = DynamoResources.QUERYREPLY;
-                msgToRequester[1] = values[1];
-                msgToRequester[2] = message;
-                msgToRequester[3] = values[2];
-                new ClientTask().executeOnExecutor(SimpleDynamoProvider.myPool, msgToRequester);
+
+                if(values[1].equals(DynamoResources.SELECTALL)) {
+                    Cursor resultCursor = query(mUri, null,
+                            values[1], null, null);
+                    Log.d(DynamoResources.TAG,"Count "+count++ +" Query Requested result count"+resultCursor.getCount()+"");
+                    String message = "";
+                    if(resultCursor.getCount() > 0)
+                        message = DynamoResources.getCursorValue(resultCursor);
+                    isRequester = true;
+                    Log.v(DynamoResources.TAG,"Count "+count++ +" Now replying back with "+message);
+                    String[] msgToRequester = new String[4];
+                    msgToRequester[0] = DynamoResources.QUERYREPLY;
+                    msgToRequester[1] = values[1];
+                    msgToRequester[2] = message;
+                    msgToRequester[3] = values[2];
+                    new ClientTask().executeOnExecutor(SimpleDynamoProvider.myPool, msgToRequester);
+                }
+                else
+                {
+                    Cursor resultCursor = query(mUri, null,
+                            values[1]+DynamoResources.separator+DynamoResources.SINGLE, null, null);
+                    Log.d(DynamoResources.TAG,"Count "+count++ +" Query Requested result count"+resultCursor.getCount()+"");
+                    String message = "";
+                    if(resultCursor.getCount() > 0)
+                        message = DynamoResources.getCursorValue(resultCursor);
+                    isRequester = true;
+                    Log.v(DynamoResources.TAG,"Count "+count++ +" Now replying back with "+message);
+                    String[] msgToRequester = new String[5];
+                    msgToRequester[0] = DynamoResources.QUERYREPLY;
+                    msgToRequester[1] = values[1];
+                    msgToRequester[2] = message;
+                    msgToRequester[3] = values[2];
+                    msgToRequester[4] = DynamoResources.SINGLE;
+                    new ClientTask().executeOnExecutor(SimpleDynamoProvider.myPool, msgToRequester);
+                }
             }
             else if(values[0].equals(DynamoResources.RECOVERY))
             {
@@ -662,6 +791,8 @@ public class SimpleDynamoProvider extends ContentProvider {
                     e.printStackTrace();
                 }
             }
+
+//            else if()
         }
 
     }
@@ -730,7 +861,10 @@ public class SimpleDynamoProvider extends ContentProvider {
                 portToSend = params[2];
                 sendMessage(portToSend, msgToSend);
             } else if (params[0].equals(DynamoResources.QUERYREPLY)) {
-                msgToSend = params[0] + DynamoResources.separator + params[1] + DynamoResources.separator + params[2];
+                if(params.length == 4)
+                    msgToSend = params[0] + DynamoResources.separator + params[1] + DynamoResources.separator + params[2];
+                else
+                    msgToSend = params[0] + DynamoResources.separator + params[1] + DynamoResources.separator + params[2] + DynamoResources.separator + params[4];
                 portToSend = params[3];
                 sendMessage(portToSend, msgToSend);
             } else if (params[0].equals(DynamoResources.DELETE)) {
@@ -746,6 +880,16 @@ public class SimpleDynamoProvider extends ContentProvider {
                 msgToSend = DynamoResources.RECOVERY + DynamoResources.separator + params[3] + DynamoResources.separator + params[1];
                 portToSend = params[2];
                 sendMessage(portToSend, msgToSend);
+            }
+
+            else if(params[0].equals(DynamoResources.REPLQUERY))
+            {
+                String[] senders = params[2].split(DynamoResources.valSeparator);
+                msgToSend = DynamoResources.QUERY + DynamoResources.separator + params[1] + DynamoResources.separator +
+                        myPort + DynamoResources.separator + params[3] + DynamoResources.separator + DynamoResources.SINGLE;
+
+                for(String sender : senders)
+                    sendMessage(sender,msgToSend);
             }
             return null;
         }
@@ -900,6 +1044,29 @@ public class SimpleDynamoProvider extends ContentProvider {
             }
         }
         return result;
+    }
+
+    public class QueryTask extends TimerTask {
+
+        String key = "";
+        public QueryTask(String key)
+        {
+            this.key = key;
+        }
+
+        @Override
+        public void run() {
+            Log.d(DynamoResources.TAG,"Time out for key "+key);
+            if(queryKeyVersion.containsKey(key))
+            {
+                try {
+                    if(queue.isEmpty())
+                        queue.put(key+" "+queryKeyVal.get(key)+" "+queryKeyVersion.get(key) + DynamoResources.valSeparator);
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }
+        }
     }
 
 }

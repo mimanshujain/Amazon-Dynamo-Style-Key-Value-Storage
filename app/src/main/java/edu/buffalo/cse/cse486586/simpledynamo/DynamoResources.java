@@ -31,6 +31,9 @@ public final class DynamoResources {
     public final static String COOR = "coordinator";
     public final static String ALIVE = "alive";
     public final static String RECOVERY = "recovery";
+    public final static String REPLQUERY = "query2Replicator";
+    public final static String SINGLE = "single";
+    public final static String OK = "OK";
 
     //Db Table and Column Name
     public static final String TABLE_NAME = "tblchatMessage";
@@ -89,13 +92,16 @@ public final class DynamoResources {
         resultCursor.moveToFirst();
         int valueIndex = resultCursor.getColumnIndex(DynamoResources.VAL_COL);
         int keyIndex = resultCursor.getColumnIndex(DynamoResources.KEY_COL);
+        int versionIndex = resultCursor.getColumnIndex(DynamoResources.VERSION);
         String result = "";
         boolean isLast = true;
         while(resultCursor.getCount() > 0 && isLast)
         {
             String newKey = resultCursor.getString(keyIndex);
             String newValue = resultCursor.getString(valueIndex);
-            result = result+newKey+" "+newValue+DynamoResources.valSeparator;
+            String version = resultCursor.getString(versionIndex);
+
+            result = result+newKey+" "+newValue + " " + version + DynamoResources.valSeparator;
             isLast = resultCursor.moveToNext();
         }
         Log.v(DynamoResources.TAG,"Final Building: "+result);
