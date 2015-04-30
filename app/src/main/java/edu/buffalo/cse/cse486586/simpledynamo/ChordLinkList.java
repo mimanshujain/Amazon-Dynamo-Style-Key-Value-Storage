@@ -25,6 +25,34 @@ public class ChordLinkList {
 
     Node head = null;
 
+    public ChordLinkList(Node n1, Node n2, Node n3, Node n4, Node n5, String port)
+    {
+        if(n1.port.equals(port))
+        {
+            head = n1;
+            return;
+        }
+        if(n2.port.equals(port))
+        {
+            head = n2;
+            return;
+        }
+        if(n3.port.equals(port))
+        {
+            head = n3;
+            return;
+        }
+        if(n4.port.equals(port))
+        {
+            head = n4;
+            return;
+        }
+        if(n5.port.equals(port))
+        {
+            head = n5;
+            return;
+        }
+    }
     public ChordLinkList(String port, String hashPort)
     {
         head = new Node(port, hashPort);
@@ -69,6 +97,23 @@ public class ChordLinkList {
         }
 
         return node.next.port + DynamoResources.valSeparator + node.next.next.port;
+    }
+
+    public String[] getPreferenceListArray(String coordinator)
+    {
+        Node node = head;
+
+        while(true)
+        {
+            if(node.port.equals(coordinator))
+                break;
+            node = node.next;
+            if(node == head)
+                break;
+        }
+
+        return new String[]{node.next.port,node.next.next.port };
+//        return node.next.port + DynamoResources.valSeparator + node.next.next.port;
     }
 
     public synchronized boolean getLifeStatus(String port)
@@ -123,6 +168,22 @@ public class ChordLinkList {
             return true;
         else return false;
     }
+
+    public int size()
+    {
+        Node node = head;
+        int count = 0;
+        while(true && node != null)
+        {
+            node = node.next;
+            count++;
+            if(node == head)
+                break;
+        }
+
+        return count;
+    }
+
 
     public String printRing()
     {

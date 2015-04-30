@@ -34,6 +34,7 @@ public final class DynamoResources {
     public final static String REPLQUERY = "query2Replicator";
     public final static String SINGLE = "single";
     public final static String OK = "OK";
+    public final static String CHECK = "check";
 
     //Db Table and Column Name
     public static final String TABLE_NAME = "tblchatMessage";
@@ -93,6 +94,7 @@ public final class DynamoResources {
         int valueIndex = resultCursor.getColumnIndex(DynamoResources.VAL_COL);
         int keyIndex = resultCursor.getColumnIndex(DynamoResources.KEY_COL);
         int versionIndex = resultCursor.getColumnIndex(DynamoResources.VERSION);
+        Log.d(DynamoResources.TAG,"Key Index "+keyIndex+" Value Index "+valueIndex+ " version index "+versionIndex + " count "+resultCursor.getCount());
         String result = "";
         boolean isLast = true;
         while(resultCursor.getCount() > 0 && isLast)
