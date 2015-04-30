@@ -4,6 +4,8 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.net.InetAddress;
@@ -74,6 +76,8 @@ public class SimpleDynamoProvider extends ContentProvider {
     static Hashtable<String, Integer> queryKeyVersion = new Hashtable<>();
     static Hashtable<String, Timer> timerMap = new Hashtable<>();
     static Hashtable<String, Hashtable<String, Boolean>> keyStat = new Hashtable<>();
+    static Hashtable<String, Integer> keyLockMap = new Hashtable<>();
+    static Hashtable<String, Integer> insertMap = new Hashtable<>();
 
     @Override
 	public int delete(Uri uri, String selection, String[] selectionArgs) {
@@ -119,7 +123,10 @@ public class SimpleDynamoProvider extends ContentProvider {
             String value = values.getAsString(DynamoResources.VAL_COL);
             Log.d(DynamoResources.TAG,"Count "+count++ +" Insertion Starts for key "+key +" with value "+value);
             String hashKey = DynamoResources.genHash(values.get(DynamoResources.KEY_COL).toString());
-            //Versioning
+
+            if(!keyLockMap.containsKey(key))
+                keyLockMap.put(key,2);
+
             int currentVersion = 0;
             if(values.containsKey(DynamoResources.VERSION))
                 currentVersion = values.getAsInteger(DynamoResources.VERSION);
@@ -132,113 +139,117 @@ public class SimpleDynamoProvider extends ContentProvider {
             String coordinatorPort = lookUpCoordinator(key, hashKey);
             if(coordinatorPort.equals(myPort))
             {
-                Log.d(DynamoResources.TAG,"Count "+count++ +" Storing at my DB and sending to replicators for key "+key);
+                Log.d(DynamoResources.TAG,"Count "+count++ +" My Key "+key);
                 messengerDb = dbHelper.getWritableDatabase();
                 Cursor cur = messengerDb.query(DynamoResources.TABLE_NAME, null,
                         DynamoResources.KEY_COL + "='" + values.get(DynamoResources.KEY_COL) + "'", null, null, null, null);
 
                 if (cur.getCount() > 0) {
                     cur.moveToFirst();
-                    Log.d(DynamoResources.TAG,"Count "+count++ +" Count2 "+cur.getCount()+" Column Count "+cur.getColumnCount()+" Index: "+cur.getColumnName(2));
+                    Log.d(DynamoResources.TAG,"Count "+count++ +DynamoResources.separator+" When I already had the key "+key);
                     int oldVersion = cur.getInt(2);
                     currentVersion = oldVersion + 1;
                     if(values.size() == 3)
                         values.remove(DynamoResources.VERSION);
                     values.put(DynamoResources.VERSION,currentVersion);
-//                messengerDb.update(DynamoResources.TABLE_NAME, values, "value = '" + values.get(DynamoResources.VAL_COL) + "'", null);
                     messengerDb.update(DynamoResources.TABLE_NAME, values, DynamoResources.KEY_COL+" = '" + values.get(DynamoResources.KEY_COL) + "'", null);
                 }
                 else
                 {
+                    Log.d(DynamoResources.TAG,"Count "+count++ +DynamoResources.separator+" I am freshly inserting key "+key);
                     currentVersion = 1;
                     if(values.size() == 3)
                         values.remove(DynamoResources.VERSION);
                     values.put(DynamoResources.VERSION, currentVersion);
-//                    myInsert(values);
                     messengerDb.insert(DynamoResources.TABLE_NAME, null, values);
-//                    myKeySet.add(key);
-
                 }
+                insertMap.put(key,1);
                 myKeysMap.put(key,value);
                 failedVersions.put(key,currentVersion);
-                //See if record is present
-                //if no - then add version column and call myinsert and also send replication message
-                //if yes - then find the older version number, +1 it and update it here only and also send the updated version to replicators
 
                 String msgToSend = DynamoResources.REPLICATION + DynamoResources.separator + key + DynamoResources.separator +
-                        value + DynamoResources.separator + myPort + DynamoResources.separator + hashKey +
-                        DynamoResources.separator + currentVersion + DynamoResources.separator + myPort;
-                String[] msg = new String[2];
+                        value + DynamoResources.separator + myPort;
+                String[] msg = new String[4];
                 msg[0] = DynamoResources.REPLICATION;
                 msg[1] = msgToSend;
-                new ClientTask().executeOnExecutor(SimpleDynamoProvider.myPool, msg);
+                msg[3] = key;
+                if(ring.size() == 5) {
+                    msg[2] = ring.head.next.port;
+                    new ClientTask().executeOnExecutor(SimpleDynamoProvider.myPool, msg);
+                    msg[2] = ring.head.next.next.port;
+                    new ClientTask().executeOnExecutor(SimpleDynamoProvider.myPool, msg);
+                }
+                else
+                {
+                    msg[2] = ring.head.next.port;
+                    new ClientTask().executeOnExecutor(SimpleDynamoProvider.myPool, msg);
+                    msg[2] = ring.head.next.next.port;
+                    new ClientTask().executeOnExecutor(SimpleDynamoProvider.myPool, msg);
+                }
+
             }
 
             else {
                 Log.d(DynamoResources.TAG,"Count "+count++ +" Sending Key "+key+" to real Coordinator and replicators "+coordinatorPort);
                 String msgToSend = key + DynamoResources.separator +
-                        value + DynamoResources.separator + myPort + DynamoResources.separator + hashKey;
+                        value + DynamoResources.separator + myPort;
 
+                insertMap.put(key,0);
                 String[] replicators;
-                String replPorts = "";
                 if(ring.size() == 5) replicators = ring.getPreferenceListArray(coordinatorPort);
                 else replicators = fixRing.getPreferenceListArray(coordinatorPort);
 
-                if(replicators[0].equals(myPort)) {
-                    Log.d(DynamoResources.TAG,"Count "+count++ +" Inserting into my DB key " + values.get(DynamoResources.KEY_COL)+" Replicator");
-                    messengerDb = dbHelper.getWritableDatabase();
-                    Cursor cur = messengerDb.query(DynamoResources.TABLE_NAME, null,
-                            DynamoResources.KEY_COL + "='" + values.get(DynamoResources.KEY_COL) + "'", null, null, null, null);
-                    if (cur.getCount() > 0) {
-                        cur.moveToFirst();
-                        int oldVersion = cur.getInt(2);
-                        int newVersion = values.getAsInteger(DynamoResources.VERSION);
-                        Log.d(DynamoResources.TAG,"Count "+count++ +" Already present key "+values.get(DynamoResources.KEY_COL)+", Updating with new version "+newVersion);
-                        if (newVersion > oldVersion) {
-                            values.put(DynamoResources.VERSION, newVersion);
-//                messengerDb.update(DynamoResources.TABLE_NAME, values, "value = '" + values.get(DynamoResources.VAL_COL) + "'", null);
-                            messengerDb.update(DynamoResources.TABLE_NAME, values, DynamoResources.KEY_COL+" = '" + values.get(DynamoResources.KEY_COL) + "'", null);
-                        }
-                    }
-                    else {
-                        Log.d(DynamoResources.TAG,"Count "+count++ +" Inserting new row with key "+values.get(DynamoResources.KEY_COL));
-                        long rowId = messengerDb.insert(DynamoResources.TABLE_NAME, null, values);
-                    }
-                    replPorts = replicators[1];
+                String replPort = "";
+                boolean toDouble = true;
+                if(replicators[0].equals(myPort))
+                {
+                    toDouble = false;
+                    replPort = replicators[1];
                 }
-                else if(replicators[1].equals(myPort)) {
-                    Log.d(DynamoResources.TAG,"Count "+count++ +" Inserting into my DB key " + values.get(DynamoResources.KEY_COL)+" Replicator");
-                    messengerDb = dbHelper.getWritableDatabase();
-                    Cursor cur = messengerDb.query(DynamoResources.TABLE_NAME, null,
-                            DynamoResources.KEY_COL + "='" + values.get(DynamoResources.KEY_COL) + "'", null, null, null, null);
-                    if (cur.getCount() > 0) {
-                        cur.moveToFirst();
-                        int oldVersion = cur.getInt(2);
-                        int newVersion = values.getAsInteger(DynamoResources.VERSION);
-                        Log.d(DynamoResources.TAG,"Count "+count++ +" Already present key "+values.get(DynamoResources.KEY_COL)+", Updating with new version "+newVersion);
-                        if (newVersion > oldVersion) {
-                            values.put(DynamoResources.VERSION, newVersion);
-//                messengerDb.update(DynamoResources.TABLE_NAME, values, "value = '" + values.get(DynamoResources.VAL_COL) + "'", null);
-                            messengerDb.update(DynamoResources.TABLE_NAME, values, DynamoResources.KEY_COL+" = '" + values.get(DynamoResources.KEY_COL) + "'", null);
-                        }
-                    }
-                    else {
-                        Log.d(DynamoResources.TAG,"Count "+count++ +" Inserting new row with key "+values.get(DynamoResources.KEY_COL));
-                        long rowId = messengerDb.insert(DynamoResources.TABLE_NAME, null, values);
-                    }
+                if(replicators[1].equals(myPort))
+                {
+                    toDouble = false;
+                    replPort = replicators[0];
                 }
-//                else
-//                    replPorts = replicators[0] + DynamoResources.valSeparator + replicators[1];
 
-                String[] msg = new String[5];
+                //Sending to the actual coordinator
+                String[] msg = new String[4];
                 msg[0] = DynamoResources.COORDINATION;
-                msg[1] = coordinatorPort;
-                msg[2] = msgToSend;
-                msg[3] = replicators[0] + DynamoResources.valSeparator + replicators[1];
-                msg[4] = key;
-//                lookingSet.add(key);
+                msg[1] = DynamoResources.separator + msgToSend;
+                msg[2] = coordinatorPort;
+                msg[3] = key;
                 new ClientTask().executeOnExecutor(SimpleDynamoProvider.myPool, msg);
+
+                msg[0] = DynamoResources.REPLICATION;
+                msg[1] = DynamoResources.REPLICATION + msgToSend;
+                //If need to send to only 1
+                if(!toDouble)
+                {
+                    Log.d(DynamoResources.TAG,"Count "+count++ +" Inserting into my DB key " + values.get(DynamoResources.KEY_COL)+" Replicator");
+                    if(myInsert(values,DynamoResources.REPLICATION) != 0)
+                    {
+                        if(!insertMap.containsKey(key))
+                            insertMap.put(key,insertMap.get(key) + 1);
+                    }
+                    msg[2] = replPort;
+                    new ClientTask().executeOnExecutor(SimpleDynamoProvider.myPool, msg);
+                }
+                else
+                {
+                    msg[2] = replicators[0];
+                    new ClientTask().executeOnExecutor(SimpleDynamoProvider.myPool, msg);
+                    msg[2] = replicators[1];
+                    new ClientTask().executeOnExecutor(SimpleDynamoProvider.myPool, msg);
+                }
             }
+
+            if(keyLockMap.get(key) == 2 && insertMap.get(key) < 2)
+            {
+                keyLockMap.put(key,1);
+                while(keyLockMap.get(key) == 1) {}
+//                while(keyLockMap.get(key) == 1 && insertMap.get(key) < 2) {}
+            }
+            insertMap.remove(key);
         }
         catch (NoSuchAlgorithmException ex)
         {
@@ -250,28 +261,36 @@ public class SimpleDynamoProvider extends ContentProvider {
 
     private synchronized int myInsert(ContentValues values, String type) throws NoSuchAlgorithmException{
 
-        if(type.equals(DynamoResources.REPLICATION)) {
-            Log.d(DynamoResources.TAG,"Count "+count++ +" Inserting into my DB key " + values.get(DynamoResources.KEY_COL));
+        if(type.equals(DynamoResources.REPLICATION))
+        {
+            Log.d(DynamoResources.TAG,"Count "+count++ +" "+type+" into my DB key " + values.get(DynamoResources.KEY_COL));
             messengerDb = dbHelper.getWritableDatabase();
             Cursor cur = messengerDb.query(DynamoResources.TABLE_NAME, null,
                     DynamoResources.KEY_COL + "='" + values.get(DynamoResources.KEY_COL) + "'", null, null, null, null);
             if (cur.getCount() > 0) {
                 cur.moveToFirst();
                 int oldVersion = cur.getInt(2);
-                int newVersion = values.getAsInteger(DynamoResources.VERSION);
-                Log.d(DynamoResources.TAG,"Count "+count++ +" Already present key "+values.get(DynamoResources.KEY_COL)+", Updating with new version "+newVersion);
-                if (newVersion > oldVersion) {
-                    values.put(DynamoResources.VERSION, newVersion);
-//                messengerDb.update(DynamoResources.TABLE_NAME, values, "value = '" + values.get(DynamoResources.VAL_COL) + "'", null);
-                    messengerDb.update(DynamoResources.TABLE_NAME, values, DynamoResources.KEY_COL+" = '" + values.get(DynamoResources.KEY_COL) + "'", null);
-                    return Math.max(newVersion,oldVersion);
-                }
+                if(values.size() == 3)
+                    values.remove(DynamoResources.VERSION);
+                values.put(DynamoResources.VERSION, oldVersion+1);
+                messengerDb.update(DynamoResources.TABLE_NAME, values, DynamoResources.KEY_COL+" = '" + values.get(DynamoResources.KEY_COL) + "'", null);
+                return oldVersion + 1;
+//                int newVersion = values.getAsInteger(DynamoResources.VERSION);
+//                Log.d(DynamoResources.TAG,"Count "+count++ +" Already present key "+values.get(DynamoResources.KEY_COL)+", Updating with new version "+newVersion);
+//                if (newVersion > oldVersion) {
+//                    values.put(DynamoResources.VERSION, newVersion);
+////                messengerDb.update(DynamoResources.TABLE_NAME, values, "value = '" + values.get(DynamoResources.VAL_COL) + "'", null);
+//                    messengerDb.update(DynamoResources.TABLE_NAME, values, DynamoResources.KEY_COL+" = '" + values.get(DynamoResources.KEY_COL) + "'", null);
+//                    return Math.max(newVersion,oldVersion);
+//                }
             }
             else {
                 Log.d(DynamoResources.TAG,"Count "+count++ +" Inserting new row with key "+values.get(DynamoResources.KEY_COL));
                 long rowId = messengerDb.insert(DynamoResources.TABLE_NAME, null, values);
+                return 1;
             }
-        }//if(type.equals(DynamoResources.FAILED))
+        }
+
         else {
             messengerDb = dbHelper.getWritableDatabase();
             Cursor cur = messengerDb.query(DynamoResources.TABLE_NAME, null,
@@ -299,8 +318,6 @@ public class SimpleDynamoProvider extends ContentProvider {
                 return 1;
             }
         }
-
-        return 0;
     }
 
 	@Override
@@ -604,9 +621,14 @@ public class SimpleDynamoProvider extends ContentProvider {
 //                    Log.v(DynamoResources.TAG,"Count "+count++ +" Socket Accepted");
                     InputStream read = socket.getInputStream();
                     String msgReceived = "";
-                    InputStreamReader reader = new InputStreamReader(read);
-                    BufferedReader buffer = new BufferedReader(reader);
-                    msgReceived = buffer.readLine();
+//                    InputStreamReader reader = new InputStreamReader(read);
+//                    BufferedReader buffer = new BufferedReader(reader);
+//                    msgReceived = buffer.readLine();
+
+                    ObjectInputStream in = new ObjectInputStream(read);
+                    ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
+                    msgReceived = (String)in.readObject();
+//                    out.writeObject(new String("Mimanshu"));
                     Log.v(DynamoResources.TAG,"Count "+count++ +" Message Received :"+msgReceived);
                     String[] msgs = msgReceived.split(DynamoResources.separator);
 
@@ -693,48 +715,71 @@ public class SimpleDynamoProvider extends ContentProvider {
 
                     else if(msgs[0].equals(DynamoResources.REPLICATION))
                     {
-                        int version = 0;
-                        Log.d(DynamoResources.TAG,"Count "+count++ +" Replication Message by " + msgs[3] + " for key " + msgs[1] + " with version " + msgs[5]);
-                        if(!msgs[5].equals(DynamoResources.FAILED)) {
+                        int version = 1;
+                        Log.d(DynamoResources.TAG,"Count "+count++ +" Replication Message by " + msgs[3] + " for key " + msgs[1]);
+                        ContentValues cv = new ContentValues();
+                        cv.put(DynamoResources.KEY_COL, msgs[1]);
+                        cv.put(DynamoResources.VAL_COL, msgs[2]);
+                        cv.put(DynamoResources.VERSION, version);
+                        if(myInsert(cv,DynamoResources.REPLICATION) != 0)
+                            out.writeObject(new String(DynamoResources.OK));
+                        Log.d(DynamoResources.TAG,"Count "+count++ +" Inserted version for key " + msgs[1]);
 
-                            version = Integer.parseInt(msgs[5]);
-                            ContentValues cv = new ContentValues();
-                            cv.put(DynamoResources.KEY_COL, msgs[1]);
-                            cv.put(DynamoResources.VAL_COL, msgs[2]);
-                            cv.put(DynamoResources.VERSION, version);
-                            myInsert(cv,DynamoResources.REPLICATION);
-                            Log.d(DynamoResources.TAG,"Count "+count++ +" Inserted version for key " + msgs[1]+" received: "+version);
-                        }
-                        else {
-//                            Log.d(DynamoResources.TAG,"Count "+count++ +" Replication Message by " + msgs[3] + " for key " + msgs[1] + " with version " + msgs[5]);
-                            ContentValues cv = new ContentValues();
-                            cv.put(DynamoResources.KEY_COL, msgs[1]);
-                            cv.put(DynamoResources.VAL_COL, msgs[2]);
-//                            cv.put(DynamoResources.COOR, msgs[6]);
-
-                            version = myInsert(cv,DynamoResources.FAILED);
-                            Log.d(DynamoResources.TAG,"Count "+count++ +" version for key " + msgs[1]+" received: "+version);
-                        }
-                        if(msgs.length >= 7)
+                        Hashtable<String, String> dummy = null;
+                        if(failedCoorMap.containsKey(msgs[3]))
                         {
-//                            Log.d(DynamoResources.TAG,"Count "+count++ +" Inserting into map for key " + msgs[1] + " for port "+msgs[6] + " key values "+failedCoorMap.entrySet());
-                            Hashtable<String, String> dummy = null;
-//                            dummy.put(msgs[1], msgs[2]);
-                            if(failedCoorMap.containsKey(msgs[6]))
-                            {
-                                Log.d(DynamoResources.TAG,"Count "+count++ +" Already contains port "+msgs[6]+" key "+msgs[1]);
-                                dummy = failedCoorMap.get(msgs[6]);
-                                dummy.put(msgs[1], msgs[2]);
-                            }
-                            else
-                            {
-                                dummy = new Hashtable<>();
-                                dummy.put(msgs[1], msgs[2]);
-                            }
-//                            Log.d(DynamoResources.TAG,msgs[1]+" Current Values for port " + msgs[6]+" are: "+dummy.entrySet().toString());
-                            failedCoorMap.put(msgs[6], dummy);
-                            failedVersions.put(msgs[1], version);
+                            Log.d(DynamoResources.TAG,"Count "+count++ +" Already contains port "+msgs[3]+" key "+msgs[1]);
+                            dummy = failedCoorMap.get(msgs[3]);
+                            dummy.put(msgs[1], msgs[2]);
                         }
+                        else
+                        {
+                            Log.d(DynamoResources.TAG,"Count "+count++ +" Not contains port "+msgs[3]+" key "+msgs[1]);
+                            dummy = new Hashtable<>();
+                            dummy.put(msgs[1], msgs[2]);
+                        }
+                        failedCoorMap.put(msgs[6], dummy);
+                        failedVersions.put(msgs[1], version);
+//                        if(!msgs[5].equals(DynamoResources.FAILED)) {
+//
+////                            version = Integer.parseInt(msgs[5]);
+//                            ContentValues cv = new ContentValues();
+//                            cv.put(DynamoResources.KEY_COL, msgs[1]);
+//                            cv.put(DynamoResources.VAL_COL, msgs[2]);
+//                            cv.put(DynamoResources.VERSION, version);
+//                            myInsert(cv,DynamoResources.REPLICATION);
+//                            Log.d(DynamoResources.TAG,"Count "+count++ +" Inserted version for key " + msgs[1]);
+//                        }
+//                        else {
+////                            Log.d(DynamoResources.TAG,"Count "+count++ +" Replication Message by " + msgs[3] + " for key " + msgs[1] + " with version " + msgs[5]);
+//                            ContentValues cv = new ContentValues();
+//                            cv.put(DynamoResources.KEY_COL, msgs[1]);
+//                            cv.put(DynamoResources.VAL_COL, msgs[2]);
+////                            cv.put(DynamoResources.COOR, msgs[6]);
+//
+//                            version = myInsert(cv,DynamoResources.FAILED);
+//                            Log.d(DynamoResources.TAG,"Count "+count++ +" version for key " + msgs[1]+" received: "+version);
+//                        }
+//                        if(msgs.length >= 7)
+//                        {
+////                            Log.d(DynamoResources.TAG,"Count "+count++ +" Inserting into map for key " + msgs[1] + " for port "+msgs[6] + " key values "+failedCoorMap.entrySet());
+//                            Hashtable<String, String> dummy = null;
+////                            dummy.put(msgs[1], msgs[2]);
+//                            if(failedCoorMap.containsKey(msgs[6]))
+//                            {
+//                                Log.d(DynamoResources.TAG,"Count "+count++ +" Already contains port "+msgs[6]+" key "+msgs[1]);
+//                                dummy = failedCoorMap.get(msgs[6]);
+//                                dummy.put(msgs[1], msgs[2]);
+//                            }
+//                            else
+//                            {
+//                                dummy = new Hashtable<>();
+//                                dummy.put(msgs[1], msgs[2]);
+//                            }
+////                            Log.d(DynamoResources.TAG,msgs[1]+" Current Values for port " + msgs[6]+" are: "+dummy.entrySet().toString());
+//                            failedCoorMap.put(msgs[6], dummy);
+//                            failedVersions.put(msgs[1], version);
+//                        }
                     }
                     else if(msgs [0].equals(DynamoResources.QUERY))
                     {
@@ -952,70 +997,86 @@ public class SimpleDynamoProvider extends ContentProvider {
 
             String msgToSend = "";
             String portToSend = "";
-            if (params[0].equals(DynamoResources.JOINING)) {
+            if (params[0].equals(DynamoResources.JOINING))
+            {
                 msgToSend = params[0] + DynamoResources.separator + params[1];
                 for (String port : remotePorts.keySet()) {
                     if (!port.equals(myPort))
                         sendMessage(port, msgToSend);
                 }
-            } else if (params[0].equals(DynamoResources.HEARTBEAT)) {
+            }
+
+            else if (params[0].equals(DynamoResources.HEARTBEAT))
+            {
                 if(params.length == 3)
                     msgToSend = params[0] + DynamoResources.separator + myPort + DynamoResources.separator + params[2];
                 else
                     msgToSend = params[0] + DynamoResources.separator + myPort;
                 portToSend = params[1];
                 sendMessage(portToSend, msgToSend);
-            } else if (params[0].equals(DynamoResources.COORDINATION)) {
-                portToSend = params[1];
-                sendMessage(portToSend, DynamoResources.COORDINATION + DynamoResources.separator + params[2]);
-//                BlockingQueue<String> bb = new SynchronousQueue<>();
-//                blockMap.put(params[4], bb);
-                String[] replicators = params[3].split(DynamoResources.valSeparator);
+            }
 
-                if (ring.getLifeStatus(portToSend)) {
-                    try {
-                        Log.d(DynamoResources.TAG,"Count "+count++ +" Waiting for version...by " + portToSend + " for " + params[4]);
-                        String version = insertBlock.poll(2000, TimeUnit.MILLISECONDS);
-//                        version = blockMap.get(params[4]).poll(3000, TimeUnit.MILLISECONDS);
-                        if (version != null) {
-                            Log.d(DynamoResources.TAG,"Count "+count++ +" Coordinator replied with version " + version + " by  " + portToSend + " for " + params[4]);
-                            msgToSend = DynamoResources.REPLICATION + DynamoResources.separator + params[2] +
-                                    DynamoResources.separator + version + DynamoResources.separator + portToSend;
-                        } else {
-                            Log.d(DynamoResources.TAG,"Count "+count++ +" Time out for key "+params[4] + " for port "+portToSend);
-//                            ring.setLifeStatus(portToSend, false);
-                            msgToSend = DynamoResources.REPLICATION + DynamoResources.separator + params[2] +
-                                    DynamoResources.separator + DynamoResources.FAILED
-                                    + DynamoResources.separator + portToSend;
-                        }
+//            else if (params[0].equals(DynamoResources.COORDINATION))
+//            {
+//                portToSend = params[2];
+//
+//
+//                sendMessage(portToSend, DynamoResources.COORDINATION + DynamoResources.separator + params[2]);
+////                BlockingQueue<String> bb = new SynchronousQueue<>();
+////                blockMap.put(params[4], bb);
+//                String[] replicators = params[3].split(DynamoResources.valSeparator);
+//
+//                if (ring.getLifeStatus(portToSend)) {
+//                    try {
+//                        Log.d(DynamoResources.TAG,"Count "+count++ +" Waiting for version...by " + portToSend + " for " + params[4]);
+//                        String version = insertBlock.poll(2000, TimeUnit.MILLISECONDS);
+////                        version = blockMap.get(params[4]).poll(3000, TimeUnit.MILLISECONDS);
+//                        if (version != null) {
+//                            Log.d(DynamoResources.TAG,"Count "+count++ +" Coordinator replied with version " + version + " by  " + portToSend + " for " + params[4]);
+//                            msgToSend = DynamoResources.REPLICATION + DynamoResources.separator + params[2] +
+//                                    DynamoResources.separator + version + DynamoResources.separator + portToSend;
+//                        } else {
+//                            Log.d(DynamoResources.TAG,"Count "+count++ +" Time out for key "+params[4] + " for port "+portToSend);
+////                            ring.setLifeStatus(portToSend, false);
+//                            msgToSend = DynamoResources.REPLICATION + DynamoResources.separator + params[2] +
+//                                    DynamoResources.separator + DynamoResources.FAILED
+//                                    + DynamoResources.separator + portToSend;
+//                        }
+//
+//                    } catch (InterruptedException e) {
+//                        e.printStackTrace();
+//                    }
+//                }
+//
+//                else
+//                {
+//                    Log.d(DynamoResources.TAG,"Count "+count++ +" Replication when coordinator is dead "+portToSend);
+//                    msgToSend = DynamoResources.REPLICATION + DynamoResources.separator + params[2] +
+//                            DynamoResources.separator + DynamoResources.FAILED + DynamoResources.separator + portToSend;
+//                }
+//
+////                msgToSend = DynamoResources.REPLICATION + DynamoResources.separator + params[2];
+//                sendMessage(replicators[0], msgToSend);
+//                sendMessage(replicators[1], msgToSend);
+//            }
 
-                    } catch (InterruptedException e) {
-                        e.printStackTrace();
+            else if (params[0].equals(DynamoResources.COORDINATION) || params[0].equals(DynamoResources.REPLICATION))
+            {
+                msgToSend = params[1];
+                portToSend = params[2];
+                if(SendReceiveMessage(portToSend,msgToSend) != null)
+                {
+                    if(insertMap.containsKey(params[3]))
+                    {
+                        if(insertMap.get(params[3]) + 1 == 2)
+                            keyLockMap.put(params[2],2);
+                        else
+                            insertMap.put(params[3],insertMap.get(params[3]) + 1);
                     }
                 }
+            }
 
-                else
-                {
-                    Log.d(DynamoResources.TAG,"Count "+count++ +" Replication when coordinator is dead "+portToSend);
-                    msgToSend = DynamoResources.REPLICATION + DynamoResources.separator + params[2] +
-                            DynamoResources.separator + DynamoResources.FAILED + DynamoResources.separator + portToSend;
-                }
-
-//                msgToSend = DynamoResources.REPLICATION + DynamoResources.separator + params[2];
-                sendMessage(replicators[0], msgToSend);
-                sendMessage(replicators[1], msgToSend);
-            } else if (params[0].equals(DynamoResources.REPLICATION)) {
-                msgToSend = params[1];
-                if(ring.size() == 5) {
-                    sendMessage(ring.head.next.port, msgToSend);
-                    sendMessage(ring.head.next.next.port, msgToSend);// + DynamoResources.separator + "2"
-                }
-                else
-                {
-                    sendMessage(fixRing.head.next.port, msgToSend);
-                    sendMessage(fixRing.head.next.next.port, msgToSend);
-                }
-            } else if (params[0].equals(DynamoResources.QUERY)) {
+            else if (params[0].equals(DynamoResources.QUERY)) {
                 msgToSend = params[0] + DynamoResources.separator + params[1] + DynamoResources.separator + myPort + DynamoResources.separator + params[3];
                 portToSend = params[2];
                 sendMessage(portToSend, msgToSend);
@@ -1064,17 +1125,61 @@ public class SimpleDynamoProvider extends ContentProvider {
             return null;
         }
 
+        private synchronized static String SendReceiveMessage(String portToSend, String msgToSend) {
+            try {
+                Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}),
+                        Integer.parseInt(portToSend));
+                socket.setSoTimeout(1500);
+                OutputStream out = socket.getOutputStream();
+                ObjectOutputStream writer = new ObjectOutputStream(out);
+                ObjectInputStream in;
+                writer.writeObject(msgToSend);
+                writer.flush();
+                in = new ObjectInputStream(socket.getInputStream());
+                String msg = (String)in.readObject();
+                Log.d(DynamoResources.TAG,msg);
+//                writer.write(msgToSend);
+
+                writer.close();
+                out.close();
+                socket.close();
+                in.close();
+                return msg;
+
+            } catch (UnknownHostException e) {
+                e.printStackTrace();
+                Log.e(DynamoResources.TAG,"Count "+count++ +" ClientTask UnknownHostException");
+            } catch (IOException e) {
+                e.printStackTrace();
+                Log.e(DynamoResources.TAG,"Count "+count++ +" ClientTask IOException for " + portToSend);
+                return null;
+            } catch (Exception e) {
+                e.printStackTrace();
+                Log.e(DynamoResources.TAG,"Count "+count++ +" ClientTask Exception");
+                return null;
+            }
+            return null;
+        }
+
         private synchronized static void sendMessage(String portToSend, String msgToSend) {
             try {
                 Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}),
                         Integer.parseInt(portToSend));
+//                socket.setSoTimeout();
                 OutputStream out = socket.getOutputStream();
-                OutputStreamWriter writer = new OutputStreamWriter(out);
-                writer.write(msgToSend);
+//                OutputStreamWriter writer = new OutputStreamWriter(out);
+                ObjectOutputStream writer = new ObjectOutputStream(out);
+                ObjectInputStream in;
+                writer.writeObject(msgToSend);
                 writer.flush();
+                in = new ObjectInputStream(socket.getInputStream());
+                Log.d(DynamoResources.TAG,(String)in.readObject()+"-------------------------------------------------");
+//                writer.write(msgToSend);
+
                 writer.close();
                 out.close();
                 socket.close();
+                in.close();
 
             } catch (UnknownHostException e) {
                 e.printStackTrace();
