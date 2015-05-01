@@ -31,26 +31,17 @@ public class SimpleDynamoActivity extends Activity {
         TextView tv = (TextView) findViewById(R.id.textView1);
         tv.setMovementMethod(new ScrollingMovementMethod());
 
-        SimpleDynamoProvider.startUp(myPort);
+
         SimpleDynamoProvider obj1 =  new SimpleDynamoProvider();
 
-        try
-        {
-            ServerSocket socket = new ServerSocket(SERVER_PORT);
-            obj1.new ServerTask().executeOnExecutor(SimpleDynamoProvider.myPool, socket);
-        }
-        catch (IOException ex)
-        {
-            Log.v(TAG, "Server Socket creation Error");
-        }
-
-        String[] message = new String[3];
-        message[0] = DynamoResources.JOINING;
-        message[1] = myPort;
-//        SimpleDynamoProvider.ClientTask obj = obj1.new ClientTask();
+        SimpleDynamoProvider.startUp(myPort);
+//        String[] message = new String[3];
+//        message[0] = DynamoResources.JOINING;
+//        message[1] = myPort;
+////        SimpleDynamoProvider.ClientTask obj = obj1.new ClientTask();
+////        obj.executeOnExecutor(SimpleDynamoProvider.myPool, message);
+//        ClientTask obj = new ClientTask();
 //        obj.executeOnExecutor(SimpleDynamoProvider.myPool, message);
-        ClientTask obj = new ClientTask();
-        obj.executeOnExecutor(SimpleDynamoProvider.myPool, message);
 	}
 
 	@Override
