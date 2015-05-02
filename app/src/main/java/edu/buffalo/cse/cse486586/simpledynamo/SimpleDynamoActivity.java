@@ -1,5 +1,6 @@
 package edu.buffalo.cse.cse486586.simpledynamo;
 
+import android.content.ContentResolver;
 import android.content.Context;
 import android.os.Bundle;
 import android.app.Activity;

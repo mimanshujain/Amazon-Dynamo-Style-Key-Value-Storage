@@ -54,7 +54,7 @@ public class SimpleDynamoProvider extends ContentProvider {
     //Threading Attributes
     private static final BlockingQueue<Runnable> sPoolWorkQueue =
             new LinkedBlockingQueue<Runnable>(128);
-    static final Executor myPool = new ThreadPoolExecutor(60,120,1, TimeUnit.SECONDS,sPoolWorkQueue);
+    static final Executor myPool = new ThreadPoolExecutor(1000,1500,1, TimeUnit.SECONDS,sPoolWorkQueue);
     //Other Variables
     static String myPort = "";
     static String hashedPort = "";
@@ -89,6 +89,7 @@ public class SimpleDynamoProvider extends ContentProvider {
         int num = 0;
 
         if(selection.equals(DynamoResources.SELECTLOCAL)) {
+            Log.d(DynamoResources.TAG,"Delete my all local request");
             num = messengerDb.delete(DynamoResources.TABLE_NAME, null, null);
             myKeysMap = new Hashtable<>();
         }
@@ -103,10 +104,40 @@ public class SimpleDynamoProvider extends ContentProvider {
             msg[2] = ring.getLifeStatus(ring.head.next.port)?ring.head.next.port:ring.head.next.next.port;
             new ClientTask().executeOnExecutor(SimpleDynamoProvider.myPool, msg);
         }
+        else if(selection.contains(DynamoResources.SINGLE))
+        {
+            selection = selection.split(DynamoResources.separator)[0];
+            Log.d(DynamoResources.TAG,"Sinle Single I am deleting the key "+selection);
+            num = messengerDb.delete(DynamoResources.TABLE_NAME,"key = \'"+selection+"\'",null);
+        }
         else
         {
-            num = messengerDb.delete(DynamoResources.TABLE_NAME,"key = \'"+selection+"\'",null);
-            myKeysMap.remove(selection);
+            try {
+                String hashKey = DynamoResources.genHash(selection);
+                String coordinatorPort = lookUpCoordinator(selection, hashKey);
+                String[] replicators = ring.getPreferenceListArray(coordinatorPort);
+
+                if(coordinatorPort.equals(myPort))
+                {
+                    Log.d(DynamoResources.TAG,"I am deleting the key "+selection);
+                    num = messengerDb.delete(DynamoResources.TABLE_NAME,"key = \'"+selection+"\'",null);
+                    myKeysMap.remove(selection);
+                    new ClientTask().executeOnExecutor(SimpleDynamoProvider.myPool, new String[]{DynamoResources.DELETE,selection
+                            +DynamoResources.separator+DynamoResources.SINGLE,replicators[0]+DynamoResources.separator+replicators[1]});
+//                    new ClientTask().executeOnExecutor(SimpleDynamoProvider.myPool, new String[]{DynamoResources.DELETE,selection
+//                            +DynamoResources.separator+DynamoResources.SINGLE,replicators[1]});
+                }
+                else {
+                    new ClientTask().executeOnExecutor(SimpleDynamoProvider.myPool, new String[]{DynamoResources.DELETE,selection
+                            +DynamoResources.separator+DynamoResources.SINGLE,coordinatorPort+DynamoResources.separator+replicators[0]+DynamoResources.separator+replicators[1]});
+//                    new ClientTask().executeOnExecutor(SimpleDynamoProvider.myPool, new String[]{DynamoResources.DELETE,selection
+//                            +DynamoResources.separator+DynamoResources.SINGLE,replicators[0]});
+//                    new ClientTask().executeOnExecutor(SimpleDynamoProvider.myPool, new String[]{DynamoResources.DELETE,selection
+//                            +DynamoResources.separator+DynamoResources.SINGLE,replicators[1]});
+                }
+            } catch (NoSuchAlgorithmException e) {
+                e.printStackTrace();
+            }
         }
         return num;
 	}
@@ -316,6 +347,7 @@ public class SimpleDynamoProvider extends ContentProvider {
 	public boolean onCreate() {
         Log.d(DynamoResources.TAG,"Count "+count++ +" Inside Create");
         dbHelper = new GroupMessageDbHelper(getContext(), DynamoResources.DB_NAME, DynamoResources.DB_VERSION, DynamoResources.TABLE_NAME);
+        new ClientTask().executeOnExecutor(SimpleDynamoProvider.myPool, new String[]{DynamoResources.FAILED});
         try
         {
             Log.d(DynamoResources.TAG,"Starting Server");
@@ -617,18 +649,6 @@ public class SimpleDynamoProvider extends ContentProvider {
                                 out.writeObject(new String(DynamoResources.OK));
                             out.flush();
                         }
-//                        if(message != null && !message.equals(""))
-//                        {
-//                            new ClientTask().executeOnExecutor(SimpleDynamoProvider.myPool, new String[]{DynamoResources.HEARTBEAT, msgs[1],message});
-//                        }
-//                        else
-//                        {
-//                            Log.v(DynamoResources.TAG,"Sending Hartbeat to "+msgs[1]);
-//                            new ClientTask().executeOnExecutor(SimpleDynamoProvider.myPool, new String[]{DynamoResources.HEARTBEAT, msgs[1]});
-//                        }
-
-//                        if(message != null && !message.equals(""))
-//                            new ClientTask().executeOnExecutor(SimpleDynamoProvider.myPool, new String[]{DynamoResources.RECOVERY, message, msgs[1], myPort});
                     }
 
                     else if(msgs[0].equals(DynamoResources.HEARTBEAT))
@@ -765,7 +785,14 @@ public class SimpleDynamoProvider extends ContentProvider {
                     else if(msgs[0].equals(DynamoResources.DELETE))
                     {
                         Log.d(DynamoResources.TAG,"Count "+count++ +" Delete request "+msgs[0]+" "+msgs[1]);
-                        if(!msgs[1].equals(myPort))
+
+                        if(msgs[1].contains(DynamoResources.SINGLE))
+                        {
+                            String selection = msgs[1].split(DynamoResources.separator)[0];
+                            delete(mUri,selection+DynamoResources.separator+DynamoResources.SINGLE,null);
+                        }
+
+                        else if(!msgs[1].equals(myPort))
                         {
                             delete(mUri,DynamoResources.SELECTALL,null);
                             if(!ring.head.next.port.equals(msgs[1])) {
@@ -777,21 +804,10 @@ public class SimpleDynamoProvider extends ContentProvider {
                             }
                         }
                     }
-                    else if(msgs[0].equals(DynamoResources.ALIVE))
+                    else if(msgs[0].equals(DynamoResources.FAILED))
                     {
-                        Log.d(DynamoResources.TAG,"Count "+count++ +" Alive message by "+msgs[2]+" for "+msgs[3]);
-                        publishProgress(new String[]{msgs[0], msgs[1]} );
-//                        insertBlock.clear();
-//                        insertBlock.add(msgs[1]);
-//                        if(blockMap.contains(msgs[3]))
-//                        {
-//                            Log.d(DynamoResources.TAG,"Count "+count++ +" inside inside inside");
-//                            BlockingQueue<String> bb = blockMap.get(msgs[3]);
-//                            bb.add(msgs[1]);
-//                            bb.clear();
-////                            blockMap.put(msgs[3],bb);
-//                            blockMap.remove(msgs[3]);
-//                        }
+                        Log.d(DynamoResources.TAG,"Count "+count++ +" Failed message");
+                        publishProgress(new String[]{msgs[0], msgs[1]});
 
                     }
                     else if(msgs[0].equals(DynamoResources.RECOVERY))
@@ -905,16 +921,18 @@ public class SimpleDynamoProvider extends ContentProvider {
                 }
                 failedCoorMap.put(values[2],dummy);
             }
-            else if(values[0].equals(DynamoResources.ALIVE))
+            else if(values[0].equals(DynamoResources.FAILED))
             {
-                Log.d(DynamoResources.TAG,"Count "+count++ +" Current queue size: "+insertBlock.size());
-                insertBlock.clear();
-                try {
-                    insertBlock.put(values[1]);
-                } catch (InterruptedException e) {
-                    Log.e(DynamoResources.TAG,"Count "+count++ +" Interrupted in Publish progress");
-                    e.printStackTrace();
-                }
+                Log.d(DynamoResources.TAG,"Count "+count++ +" Instruction to delete all");
+
+                delete(mUri,DynamoResources.SELECTLOCAL,null);
+//                insertBlock.clear();
+//                try {
+//                    insertBlock.put(values[1]);
+//                } catch (InterruptedException e) {
+//                    Log.e(DynamoResources.TAG,"Count "+count++ +" Interrupted in Publish progress");
+//                    e.printStackTrace();
+//                }
             }
 
 //            else if()
@@ -1046,7 +1064,16 @@ public class SimpleDynamoProvider extends ContentProvider {
                     }
                 }
 
-            } else if (params[0].equals(DynamoResources.QUERYREPLY)) {
+            }
+            else if (params[0].equals(DynamoResources.FAILED)) {
+//                msgToSend = params[0] + DynamoResources.separator + DynamoResources.SELECTLOCAL;
+//                portToSend = myPort;
+//                sendMessage(portToSend, msgToSend);
+                messengerDb = dbHelper.getWritableDatabase();
+                messengerDb.delete(DynamoResources.TABLE_NAME, null, null);
+            }
+
+            else if (params[0].equals(DynamoResources.QUERYREPLY)) {
                 if(params.length == 4)
                     msgToSend = params[0] + DynamoResources.separator + params[1] + DynamoResources.separator + params[2];
                 else
@@ -1054,9 +1081,14 @@ public class SimpleDynamoProvider extends ContentProvider {
                 portToSend = params[3];
                 sendMessage(portToSend, msgToSend);
             } else if (params[0].equals(DynamoResources.DELETE)) {
-                msgToSend = params[0] + DynamoResources.separator + params[1];
-                portToSend = params[2];
-                sendMessage(portToSend, msgToSend);
+                String[] senderList = params[2].split(DynamoResources.separator);
+                for(String port : senderList)
+                {
+                    msgToSend = params[0] + DynamoResources.separator + params[1];
+                    portToSend = port;
+                    sendMessage(portToSend, msgToSend);
+                }
+
             } else if (params[0].equals(DynamoResources.ALIVE)) {
                 msgToSend = params[1];
                 portToSend = params[2];
@@ -1078,11 +1110,7 @@ public class SimpleDynamoProvider extends ContentProvider {
                     sendMessage(sender,msgToSend);
             }
 
-            else if (params[0].equals(DynamoResources.CHECK)) {
-                msgToSend = params[0] + DynamoResources.separator + params[1];
-                portToSend = params[2];
-                sendMessage(portToSend, msgToSend);
-            }
+
             else if (params[0].equals(DynamoResources.OK)) {
                 msgToSend = DynamoResources.OK+DynamoResources.separator;
                 portToSend = params[1];
@@ -1256,6 +1284,7 @@ public class SimpleDynamoProvider extends ContentProvider {
         Log.d(DynamoResources.TAG,"Count "+count++ +" Inside Start Up");
         myPort = myPortNum;
         try {
+
             remotePorts.put("11108","5554");
             remotePorts.put("11120","5560");
             remotePorts.put("11116","5558");
@@ -1285,7 +1314,6 @@ public class SimpleDynamoProvider extends ContentProvider {
             n4.previous = n3;
             n5.previous = n4;
             fixRing = new ChordLinkList(n1,n2,n3,n4,n5,myPort);
-
 
             String[] message = new String[3];
             message[0] = DynamoResources.JOINING;
