@@ -51,6 +51,7 @@ public final class DynamoResources {
     public static final String valSeparator = "##";
     public static final String SELECTALL = "\"*\"";
     public static final String SELECTLOCAL = "\"@\"";
+    public static final String SELECTMYLOCAL = "my local";
 
     //Class Names
     static final String TAG = SimpleDynamoProvider.class.getSimpleName();
