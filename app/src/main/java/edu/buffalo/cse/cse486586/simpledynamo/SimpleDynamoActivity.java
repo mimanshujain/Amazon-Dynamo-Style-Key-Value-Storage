@@ -33,9 +33,9 @@ public class SimpleDynamoActivity extends Activity {
         tv.setMovementMethod(new ScrollingMovementMethod());
 
 
-        SimpleDynamoProvider obj1 =  new SimpleDynamoProvider();
-
-        SimpleDynamoProvider.startUp(myPort);
+//        SimpleDynamoProvider obj1 =  new SimpleDynamoProvider();
+//
+//        SimpleDynamoProvider.startUp(myPort);
 //        String[] message = new String[3];
 //        message[0] = DynamoResources.JOINING;
 //        message[1] = myPort;
