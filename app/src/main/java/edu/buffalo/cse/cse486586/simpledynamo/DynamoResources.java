@@ -22,18 +22,19 @@ public final class DynamoResources {
     //Message Types
     public final static String JOINING = "Joining";
     public final static String HEARTBEAT = "heartBeat";
-    public final static String COORDINATION = "coor";
-    public final static String REPLICATION = "repl";
+    public final static String COORDINATION = "Coordinator";
+    public final static String REPLICATION = "Replicator";
     public final static String QUERY = "query";
     public final static String QUERYREPLY = "queryReply";
     public final static String DELETE = "delete";
     public final static String FAILED = "failed";
-    public final static String COOR = "coordinator";
+    public final static String COOR = "Coordination";
     public final static String ALIVE = "alive";
     public final static String RECOVERY = "recovery";
     public final static String REPLQUERY = "query2Replicator";
     public final static String SINGLE = "single";
     public final static String OK = "OK";
+    public final static String REPL = "Replication";
     public final static String CHECK = "check";
 
     //Db Table and Column Name
@@ -49,6 +50,7 @@ public final class DynamoResources {
     //Message Identifiers
     public static final String separator = "---";
     public static final String valSeparator = "##";
+    public static final String replSep = "$$$$";
     public static final String SELECTALL = "\"*\"";
     public static final String SELECTLOCAL = "\"@\"";
     public static final String SELECTMYLOCAL = "my local";
@@ -104,7 +106,7 @@ public final class DynamoResources {
             String newValue = resultCursor.getString(valueIndex);
             String version = resultCursor.getString(versionIndex);
 
-            result = result+newKey+" "+newValue + " " + version + DynamoResources.valSeparator;
+            result = result + newKey+" "+newValue + " " + version + DynamoResources.valSeparator;
             isLast = resultCursor.moveToNext();
         }
         Log.v(DynamoResources.TAG,"Final Building: "+result);
